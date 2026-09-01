@@ -65,6 +65,17 @@ export type AcpSessionRuntimeOptions = {
   backendExtras?: Record<string, string>;
 };
 
+export type SessionCronPolicy = {
+  /** Force scheduled agent work into an isolated agentTurn session. */
+  sessionTarget?: "isolated";
+  /** Default delivery mode when the job has no explicit external target. */
+  deliveryMode?: "none" | "announce";
+  /** Whether implicit session/channel delivery inference is allowed. */
+  externalDelivery?: "explicit-only" | "inherit";
+  /** Maximum recent messages a cron tool call may capture. */
+  contextMessagesMax?: number;
+};
+
 export type SessionEntry = {
   /**
    * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
@@ -118,6 +129,8 @@ export type SessionEntry = {
   groupActivation?: "mention" | "always";
   groupActivationNeedsSystemIntro?: boolean;
   sendPolicy?: "allow" | "deny";
+  /** Session-scoped defaults enforced by the cron tool. */
+  cronPolicy?: SessionCronPolicy;
   queueMode?:
     | "steer"
     | "followup"

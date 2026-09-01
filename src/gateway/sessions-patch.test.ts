@@ -105,6 +105,43 @@ function createAllowlistedAnthropicModelCfg(): OpenClawConfig {
 }
 
 describe("gateway sessions patch", () => {
+  test("persists a validated session cron policy", async () => {
+    const entry = expectPatchOk(
+      await runPatch({
+        patch: {
+          key: MAIN_SESSION_KEY,
+          cronPolicy: {
+            sessionTarget: "isolated",
+            deliveryMode: "none",
+            externalDelivery: "explicit-only",
+            contextMessagesMax: 6,
+          },
+        },
+      }),
+    );
+    expect(entry.cronPolicy).toEqual({
+      sessionTarget: "isolated",
+      deliveryMode: "none",
+      externalDelivery: "explicit-only",
+      contextMessagesMax: 6,
+    });
+  });
+
+  test("clears a session cron policy", async () => {
+    const store: Record<string, SessionEntry> = {
+      [MAIN_SESSION_KEY]: {
+        cronPolicy: { sessionTarget: "isolated", deliveryMode: "none" },
+      } as SessionEntry,
+    };
+    const entry = expectPatchOk(
+      await runPatch({
+        store,
+        patch: { key: MAIN_SESSION_KEY, cronPolicy: null },
+      }),
+    );
+    expect(entry.cronPolicy).toBeUndefined();
+  });
+
   test("persists thinkingLevel=off (does not clear)", async () => {
     const entry = expectPatchOk(
       await runPatch({

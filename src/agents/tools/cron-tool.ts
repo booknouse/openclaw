@@ -1,5 +1,11 @@
 import { Type } from "@sinclair/typebox";
 import { loadConfig } from "../../config/config.js";
+import type { OpenClawConfig } from "../../config/config.js";
+import {
+  loadSessionStore,
+  resolveStorePath,
+  type SessionCronPolicy,
+} from "../../config/sessions.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
 import type { CronDelivery, CronMessageChannel } from "../../cron/types.js";
 import { normalizeHttpWebhookUrl } from "../../cron/webhook-url.js";
@@ -57,6 +63,10 @@ type GatewayToolCaller = typeof callGatewayTool;
 
 type CronToolDeps = {
   callGatewayTool?: GatewayToolCaller;
+  resolveSessionCronPolicy?: (
+    agentSessionKey: string | undefined,
+    cfg: OpenClawConfig,
+  ) => SessionCronPolicy | undefined;
 };
 
 type ChatMessage = {
@@ -154,6 +164,84 @@ function stripThreadSuffixFromSessionKey(sessionKey: string): string {
   return parent ? parent : sessionKey;
 }
 
+function resolveStoredSessionCronPolicy(
+  agentSessionKey: string | undefined,
+  cfg: OpenClawConfig,
+): SessionCronPolicy | undefined {
+  const sessionKey = agentSessionKey?.trim();
+  if (!sessionKey) {
+    return undefined;
+  }
+  const { mainKey, alias } = resolveMainSessionAlias(cfg);
+  const resolvedKey = resolveInternalSessionKey({ key: sessionKey, alias, mainKey });
+  const agentId = resolveSessionAgentId({ sessionKey: resolvedKey, config: cfg });
+  const storePath = resolveStorePath(cfg.session?.store, { agentId });
+  return loadSessionStore(storePath)[resolvedKey]?.cronPolicy;
+}
+
+function applySessionCronPolicy(
+  job: Record<string, unknown>,
+  policy?: SessionCronPolicy,
+  options?: { applyDeliveryDefault?: boolean },
+) {
+  if (!policy) {
+    return;
+  }
+
+  const payload = isRecord(job.payload) ? job.payload : undefined;
+  if (
+    policy.sessionTarget === "isolated" &&
+    payload?.kind === "systemEvent" &&
+    typeof payload.text === "string" &&
+    payload.text.trim()
+  ) {
+    job.sessionTarget = "isolated";
+    job.payload = {
+      kind: "agentTurn",
+      message: payload.text,
+    };
+  } else if (policy.sessionTarget === "isolated" && payload?.kind === "agentTurn") {
+    job.sessionTarget = "isolated";
+  }
+
+  const deliveryValue = job.delivery;
+  const delivery = isRecord(deliveryValue) ? deliveryValue : undefined;
+  const mode = typeof delivery?.mode === "string" ? delivery.mode.trim().toLowerCase() : "";
+  const hasExplicitTarget =
+    typeof delivery?.channel === "string" &&
+    delivery.channel.trim() !== "" &&
+    typeof delivery?.to === "string" &&
+    delivery.to.trim() !== "";
+  if (hasExplicitTarget || mode === "webhook" || (mode && mode !== "announce")) {
+    return;
+  }
+  if (options?.applyDeliveryDefault === false && !("delivery" in job)) {
+    return;
+  }
+  if (policy.deliveryMode || policy.externalDelivery === "explicit-only") {
+    const policyMode = policy.externalDelivery === "explicit-only" ? "none" : policy.deliveryMode;
+    job.delivery = policyMode === "none" ? { mode: "none" } : { ...delivery, mode: policyMode };
+  }
+}
+
+function buildSessionCronPolicyGuidance(policy?: SessionCronPolicy): string {
+  if (!policy) {
+    return "";
+  }
+  const lines = ["SESSION CRON POLICY (enforced):"];
+  if (policy.sessionTarget === "isolated") {
+    lines.push("- Use sessionTarget=isolated with payload.kind=agentTurn.");
+  }
+  if (policy.deliveryMode === "none" || policy.externalDelivery === "explicit-only") {
+    lines.push(
+      '- Use delivery.mode="none" unless the user explicitly requests an external destination.',
+      "- External announce delivery requires both delivery.channel and delivery.to.",
+      '- Never change a policy-normalized delivery.mode="none" back to "announce".',
+    );
+  }
+  return `\n\n${lines.join("\n")}`;
+}
+
 function inferDeliveryFromSessionKey(agentSessionKey?: string): CronDelivery | null {
   const rawSessionKey = agentSessionKey?.trim();
   if (!rawSessionKey) {
@@ -209,6 +297,10 @@ function inferDeliveryFromSessionKey(agentSessionKey?: string): CronDelivery | n
 
 export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): AnyAgentTool {
   const callGateway = deps?.callGatewayTool ?? callGatewayTool;
+  const resolveCronPolicy = deps?.resolveSessionCronPolicy ?? resolveStoredSessionCronPolicy;
+  const descriptionCronPolicy = opts?.agentSessionKey
+    ? resolveCronPolicy(opts.agentSessionKey, loadConfig())
+    : undefined;
   return {
     label: "Cron",
     name: "cron",
@@ -268,7 +360,7 @@ WAKE MODES (for wake action):
 - "next-heartbeat" (default): Wake on next heartbeat
 - "now": Wake immediately
 
-Use jobId as the canonical identifier; id is accepted for compatibility. Use contextMessages (0-10) to add previous messages as context to the job text.`,
+Use jobId as the canonical identifier; id is accepted for compatibility. Use contextMessages (0-10) to add previous messages as context to the job text.${buildSessionCronPolicyGuidance(descriptionCronPolicy)}`,
     parameters: CronToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
@@ -347,8 +439,12 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
             throw new Error("job required");
           }
           const job = normalizeCronJobCreate(params.job) ?? params.job;
+          const cfg = loadConfig();
+          const cronPolicy = resolveCronPolicy(opts?.agentSessionKey, cfg);
+          if (isRecord(job)) {
+            applySessionCronPolicy(job, cronPolicy);
+          }
           if (job && typeof job === "object") {
-            const cfg = loadConfig();
             const { mainKey, alias } = resolveMainSessionAlias(cfg);
             const resolvedSessionKey = opts?.agentSessionKey
               ? resolveInternalSessionKey({ key: opts.agentSessionKey, alias, mainKey })
@@ -407,18 +503,26 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
             }
           }
 
-          const contextMessages =
+          const requestedContextMessages =
             typeof params.contextMessages === "number" && Number.isFinite(params.contextMessages)
               ? params.contextMessages
               : 0;
+          const contextMessages = Math.min(
+            requestedContextMessages,
+            cronPolicy?.contextMessagesMax ?? REMINDER_CONTEXT_MESSAGES_MAX,
+          );
           if (
             job &&
             typeof job === "object" &&
             "payload" in job &&
-            (job as { payload?: { kind?: string; text?: string } }).payload?.kind === "systemEvent"
+            ((job as { payload?: { kind?: string } }).payload?.kind === "systemEvent" ||
+              (job as { payload?: { kind?: string } }).payload?.kind === "agentTurn")
           ) {
-            const payload = (job as { payload: { kind: string; text: string } }).payload;
-            if (typeof payload.text === "string" && payload.text.trim()) {
+            const payload = (job as { payload: { kind: string; text?: string; message?: string } })
+              .payload;
+            const field = payload.kind === "agentTurn" ? "message" : "text";
+            const payloadText = payload[field];
+            if (typeof payloadText === "string" && payloadText.trim()) {
               const contextLines = await buildReminderContextLines({
                 agentSessionKey: opts?.agentSessionKey,
                 gatewayOpts,
@@ -426,8 +530,8 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
                 callGatewayTool: callGateway,
               });
               if (contextLines.length > 0) {
-                const baseText = stripExistingContext(payload.text);
-                payload.text = `${baseText}${REMINDER_CONTEXT_MARKER}${contextLines.join("\n")}`;
+                const baseText = stripExistingContext(payloadText);
+                payload[field] = `${baseText}${REMINDER_CONTEXT_MARKER}${contextLines.join("\n")}`;
               }
             }
           }
@@ -478,6 +582,10 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
             throw new Error("patch required");
           }
           const patch = normalizeCronJobPatch(params.patch) ?? params.patch;
+          const cronPolicy = resolveCronPolicy(opts?.agentSessionKey, loadConfig());
+          if (isRecord(patch)) {
+            applySessionCronPolicy(patch, cronPolicy, { applyDeliveryDefault: false });
+          }
           return jsonResult(
             await callGateway("cron.update", gatewayOpts, {
               id,

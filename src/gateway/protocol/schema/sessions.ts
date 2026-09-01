@@ -83,6 +83,24 @@ export const SessionsPatchParamsSchema = Type.Object(
     sendPolicy: Type.Optional(
       Type.Union([Type.Literal("allow"), Type.Literal("deny"), Type.Null()]),
     ),
+    cronPolicy: Type.Optional(
+      Type.Union([
+        Type.Object(
+          {
+            sessionTarget: Type.Optional(Type.Literal("isolated")),
+            deliveryMode: Type.Optional(
+              Type.Union([Type.Literal("none"), Type.Literal("announce")]),
+            ),
+            externalDelivery: Type.Optional(
+              Type.Union([Type.Literal("explicit-only"), Type.Literal("inherit")]),
+            ),
+            contextMessagesMax: Type.Optional(Type.Integer({ minimum: 0, maximum: 10 })),
+          },
+          { additionalProperties: false },
+        ),
+        Type.Null(),
+      ]),
+    ),
     groupActivation: Type.Optional(
       Type.Union([Type.Literal("mention"), Type.Literal("always"), Type.Null()]),
     ),

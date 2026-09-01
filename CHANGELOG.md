@@ -2,7 +2,15 @@
 
 Docs: https://docs.openclaw.ai
 
-## Unreleased
+## 2026.3.13-cortex.2
+
+### Changes
+
+- Cron/session policy: add structured per-session cron defaults through `sessions.patch`, including isolated agent turns, explicit-only delivery, bounded context capture, and `contextMessages` support for `agentTurn` payloads.
+
+### Fixes
+
+- Cron/session policy: enforce delivery defaults on job updates and require a complete external channel/recipient target, preventing policy-normalized web reminders from being changed back to unusable announce delivery.
 
 ## 2026.3.13
 

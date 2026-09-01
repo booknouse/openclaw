@@ -18,7 +18,7 @@ import {
   supportsXHighThinking,
 } from "../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../config/config.js";
-import type { SessionEntry } from "../config/sessions.js";
+import type { SessionCronPolicy, SessionEntry } from "../config/sessions.js";
 import {
   isAcpSessionKey,
   isSubagentSessionKey,
@@ -82,6 +82,54 @@ function normalizeSubagentControlScope(raw: string): "children" | "none" | undef
     return normalized;
   }
   return undefined;
+}
+
+function normalizeSessionCronPolicy(raw: unknown): SessionCronPolicy | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const value = raw as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "sessionTarget",
+    "deliveryMode",
+    "externalDelivery",
+    "contextMessagesMax",
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    return undefined;
+  }
+  const sessionTarget = value.sessionTarget;
+  const deliveryMode = value.deliveryMode;
+  const externalDelivery = value.externalDelivery;
+  const contextMessagesMax = value.contextMessagesMax;
+  if (sessionTarget !== undefined && sessionTarget !== "isolated") {
+    return undefined;
+  }
+  if (deliveryMode !== undefined && deliveryMode !== "none" && deliveryMode !== "announce") {
+    return undefined;
+  }
+  if (
+    externalDelivery !== undefined &&
+    externalDelivery !== "explicit-only" &&
+    externalDelivery !== "inherit"
+  ) {
+    return undefined;
+  }
+  if (
+    contextMessagesMax !== undefined &&
+    (typeof contextMessagesMax !== "number" ||
+      !Number.isInteger(contextMessagesMax) ||
+      contextMessagesMax < 0 ||
+      contextMessagesMax > 10)
+  ) {
+    return undefined;
+  }
+  return {
+    ...(sessionTarget !== undefined && { sessionTarget }),
+    ...(deliveryMode !== undefined && { deliveryMode }),
+    ...(externalDelivery !== undefined && { externalDelivery }),
+    ...(contextMessagesMax !== undefined && { contextMessagesMax }),
+  };
 }
 
 export async function applySessionsPatchToStore(params: {
@@ -441,6 +489,19 @@ export async function applySessionsPatchToStore(params: {
         return invalid('invalid sendPolicy (use "allow"|"deny")');
       }
       next.sendPolicy = normalized;
+    }
+  }
+
+  if ("cronPolicy" in patch) {
+    const raw = patch.cronPolicy;
+    if (raw === null) {
+      delete next.cronPolicy;
+    } else if (raw !== undefined) {
+      const normalized = normalizeSessionCronPolicy(raw);
+      if (!normalized) {
+        return invalid("invalid cronPolicy");
+      }
+      next.cronPolicy = normalized;
     }
   }
 

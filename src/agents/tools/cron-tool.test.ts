@@ -28,6 +28,11 @@ describe("cron tool", () => {
     return params?.payload?.text ?? "";
   }
 
+  function readCronPayloadMessage(index = 0): string {
+    const params = readGatewayCall(index).params as { payload?: { message?: string } } | undefined;
+    return params?.payload?.message ?? "";
+  }
+
   function expectSingleGatewayCallMethod(method: string) {
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
     const call = readGatewayCall(0);
@@ -250,6 +255,231 @@ describe("cron tool", () => {
     expect(text).toContain("User: Discussed Q2 budget");
     expect(text).toContain("Assistant: We agreed to review on Tuesday.");
     expect(text).toContain("User: Remind me about the thing at 2pm");
+  });
+
+  it("applies session cron policy to an isolated agentTurn", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          sessionTarget: "isolated",
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+          contextMessagesMax: 6,
+        }),
+      },
+    );
+    await tool.execute("call-policy", {
+      action: "add",
+      job: {
+        name: "reminder",
+        schedule: { at: new Date(123).toISOString() },
+        sessionTarget: "main",
+        payload: { kind: "systemEvent", text: "Review the report" },
+      },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.add") as
+      | {
+          sessionTarget?: string;
+          payload?: { kind?: string; message?: string };
+          delivery?: { mode?: string };
+        }
+      | undefined;
+    expect(params?.sessionTarget).toBe("isolated");
+    expect(params?.payload).toEqual({ kind: "agentTurn", message: "Review the report" });
+    expect(params?.delivery).toEqual({ mode: "none" });
+  });
+
+  it("preserves an explicit external target under session cron policy", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          sessionTarget: "isolated",
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+    await tool.execute("call-policy-target", {
+      action: "add",
+      job: {
+        ...buildReminderAgentTurnJob(),
+        delivery: { mode: "announce", channel: "telegram", to: "123" },
+      },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.add") as
+      | { delivery?: { mode?: string; channel?: string; to?: string } }
+      | undefined;
+    expect(params?.delivery).toEqual({ mode: "announce", channel: "telegram", to: "123" });
+  });
+
+  it("requires both channel and recipient for explicit external delivery", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+    await tool.execute("call-policy-incomplete-target", {
+      action: "add",
+      job: {
+        ...buildReminderAgentTurnJob(),
+        delivery: { mode: "announce", channel: "webchat", bestEffort: true },
+      },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.add") as
+      | { delivery?: { mode?: string; channel?: string; bestEffort?: boolean } }
+      | undefined;
+    expect(params?.delivery).toEqual({ mode: "none" });
+  });
+
+  it("applies session cron policy to delivery updates", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+    await tool.execute("call-policy-update", {
+      action: "update",
+      jobId: "job-1",
+      patch: { delivery: { mode: "announce" } },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.update") as
+      | { patch?: { delivery?: { mode?: string } } }
+      | undefined;
+    expect(params?.patch?.delivery).toEqual({ mode: "none" });
+  });
+
+  it("normalizes incomplete external targets in delivery updates", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+    await tool.execute("call-policy-update-incomplete-target", {
+      action: "update",
+      jobId: "job-1",
+      patch: { delivery: { mode: "announce", channel: "webchat", bestEffort: true } },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.update") as
+      | { patch?: { delivery?: { mode?: string } } }
+      | undefined;
+    expect(params?.patch?.delivery).toEqual({ mode: "none" });
+  });
+
+  it("preserves complete external targets in delivery updates", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+    await tool.execute("call-policy-update-external-target", {
+      action: "update",
+      jobId: "job-1",
+      patch: { delivery: { mode: "announce", channel: "telegram", to: "123" } },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.update") as
+      | { patch?: { delivery?: { mode?: string; channel?: string; to?: string } } }
+      | undefined;
+    expect(params?.patch?.delivery).toEqual({
+      mode: "announce",
+      channel: "telegram",
+      to: "123",
+    });
+  });
+
+  it("does not add delivery to unrelated updates under session cron policy", async () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+    await tool.execute("call-policy-disable", {
+      action: "update",
+      jobId: "job-1",
+      patch: { enabled: false },
+    });
+
+    const params = expectSingleGatewayCallMethod("cron.update") as
+      | { patch?: { enabled?: boolean; delivery?: unknown } }
+      | undefined;
+    expect(params?.patch).toEqual({ enabled: false });
+  });
+
+  it("adds session cron policy guidance to the tool description", () => {
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      {
+        resolveSessionCronPolicy: () => ({
+          sessionTarget: "isolated",
+          deliveryMode: "none",
+          externalDelivery: "explicit-only",
+        }),
+      },
+    );
+
+    expect(tool.description).toContain("SESSION CRON POLICY (enforced)");
+    expect(tool.description).toContain(
+      'Never change a policy-normalized delivery.mode="none" back to "announce".',
+    );
+  });
+
+  it("adds bounded recent context to agentTurn reminders", async () => {
+    callGatewayMock
+      .mockResolvedValueOnce({
+        messages: [
+          { role: "user", content: [{ type: "text", text: "Older detail" }] },
+          { role: "assistant", content: [{ type: "text", text: "Current detail" }] },
+          { role: "user", content: [{ type: "text", text: "Remind me tomorrow" }] },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const tool = createCronTool(
+      { agentSessionKey: "agent:main:tenant:user:web:conversation:role:user" },
+      { resolveSessionCronPolicy: () => ({ contextMessagesMax: 2 }) },
+    );
+    await tool.execute("call-agent-context", {
+      action: "add",
+      contextMessages: 6,
+      job: {
+        ...buildReminderAgentTurnJob(),
+        sessionTarget: "isolated",
+      },
+    });
+
+    const historyCall = readGatewayCall(0);
+    expect(historyCall.method).toBe("chat.history");
+    expect(historyCall.params).toMatchObject({ limit: 2 });
+    const message = readCronPayloadMessage(1);
+    expect(message).not.toContain("Older detail");
+    expect(message).toContain("Current detail");
+    expect(message).toContain("Remind me tomorrow");
   });
 
   it("caps contextMessages at 10", async () => {
