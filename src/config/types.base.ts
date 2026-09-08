@@ -115,6 +115,8 @@ export type SessionConfig = {
   /** Channel-specific reset overrides (e.g. { discord: { mode: "idle", idleMinutes: 10080 } }). */
   resetByChannel?: Record<string, SessionResetConfig>;
   store?: string;
+  /** Permanent runtime archives outside the live state/session directories. No automatic expiry. */
+  archive?: { directory: string };
   typingIntervalSeconds?: number;
   typingMode?: TypingMode;
   /**

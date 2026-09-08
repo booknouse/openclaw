@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { cancelBackgroundCompactionForSession } from "../agents/background-compaction-state.js";
 import { clearBootstrapSnapshot } from "../agents/bootstrap-cache.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../agents/pi-embedded.js";
 import { stopSubagentsForRequester } from "../auto-reply/reply/abort.js";
@@ -226,6 +227,9 @@ export async function cleanupSessionBeforeMutation(params: {
   canonicalKey?: string;
   reason: "session-reset" | "session-delete";
 }) {
+  if (params.entry?.sessionId) {
+    cancelBackgroundCompactionForSession(params.entry.sessionId);
+  }
   const cleanupError = await ensureSessionRuntimeCleanup({
     cfg: params.cfg,
     key: params.key,

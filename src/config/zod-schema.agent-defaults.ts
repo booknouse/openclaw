@@ -86,6 +86,18 @@ export const AgentDefaultsSchema = z
       .optional(),
     compaction: z
       .object({
+        background: z
+          .object({
+            enabled: z.boolean().optional(),
+            triggerRatio: z.number().min(0.3).max(0.85).optional(),
+            maxOutputTokens: z.number().int().min(512).max(16384).optional(),
+            timeoutMs: z.number().int().min(1000).max(300000).optional(),
+            retryDelayMs: z.number().int().min(1000).max(600000).optional(),
+            maxConcurrent: z.number().int().min(1).max(8).optional(),
+            reserveTokens: z.number().int().min(4096).optional(),
+          })
+          .strict()
+          .optional(),
         mode: z.union([z.literal("default"), z.literal("safeguard")]).optional(),
         reserveTokens: z.number().int().nonnegative().optional(),
         keepRecentTokens: z.number().int().positive().optional(),
@@ -126,6 +138,16 @@ export const AgentDefaultsSchema = z
           .optional(),
       })
       .strict()
+      .superRefine((value, ctx) => {
+        if (value.background?.enabled && !value.model?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["model"],
+            message:
+              "An explicit compaction model is required when background compaction is enabled",
+          });
+        }
+      })
       .optional(),
     embeddedPi: z
       .object({

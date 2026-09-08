@@ -119,6 +119,7 @@ export const SessionsResetParamsSchema = Type.Object(
 export const SessionsDeleteParamsSchema = Type.Object(
   {
     key: NonEmptyString,
+    onlyIfIdle: Type.Optional(Type.Boolean()),
     deleteTranscript: Type.Optional(Type.Boolean()),
     // Internal control: when false, still unbind thread bindings but skip hook emission.
     emitLifecycleHooks: Type.Optional(Type.Boolean()),

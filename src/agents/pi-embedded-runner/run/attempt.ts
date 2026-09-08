@@ -35,6 +35,10 @@ import { resolveOpenClawAgentDir } from "../../agent-paths.js";
 import { resolveSessionAgentIds } from "../../agent-scope.js";
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
 import {
+  commitReadyBackgroundCompaction,
+  scheduleBackgroundCompaction,
+} from "../../background-compaction.js";
+import {
   analyzeBootstrapBudget,
   buildBootstrapPromptWarning,
   buildBootstrapTruncationReportMeta,
@@ -1709,6 +1713,7 @@ export async function runEmbeddedAttempt(
     });
 
     let sessionManager: ReturnType<typeof guardSessionManager> | undefined;
+    let backgroundCompactionCommitted = false;
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
     let removeToolResultContextGuard: (() => void) | undefined;
     try {
@@ -1756,6 +1761,20 @@ export async function runEmbeddedAttempt(
         sessionId: params.sessionId,
         cwd: effectiveWorkspace,
       });
+
+      if (!params.contextEngine?.info.ownsCompaction) {
+        backgroundCompactionCommitted = commitReadyBackgroundCompaction({
+          config: params.config,
+          sessionId: params.sessionId,
+          sessionFile: params.sessionFile,
+          sessionKey: params.sessionKey,
+          sessionManager,
+          tokenBudget: params.contextTokenBudget ?? params.model.contextWindow,
+          agentDir,
+          provider: params.provider,
+          authProfileId: params.authProfileId,
+        });
+      }
 
       const settingsManager = createPreparedEmbeddedPiSettingsManager({
         cwd: effectiveWorkspace,
@@ -2550,7 +2569,8 @@ export async function runEmbeddedAttempt(
         // Using a cumulative count (> 0) instead of a delta check avoids missing
         // compactions that complete during activeSession.prompt() before the delta
         // baseline is sampled.
-        const compactionOccurredThisAttempt = getCompactionCount() > 0;
+        const compactionOccurredThisAttempt =
+          backgroundCompactionCommitted || getCompactionCount() > 0;
         // Append cache-TTL timestamp AFTER prompt + compaction retry completes.
         // Previously this was before the prompt, which caused a custom entry to be
         // inserted between compaction and the next prompt — breaking the
@@ -2605,6 +2625,21 @@ export async function runEmbeddedAttempt(
           } catch (entryErr) {
             log.warn(`failed to persist prompt error entry: ${String(entryErr)}`);
           }
+        }
+
+        // This only schedules work; the provider request runs after releasing the session lock.
+        if (!promptError && !params.contextEngine?.info.ownsCompaction) {
+          scheduleBackgroundCompaction({
+            config: params.config,
+            sessionId: sessionIdUsed,
+            sessionFile: params.sessionFile,
+            sessionKey: params.sessionKey,
+            sessionManager,
+            tokenBudget: params.contextTokenBudget ?? params.model.contextWindow,
+            agentDir,
+            provider: params.provider,
+            authProfileId: params.authProfileId,
+          });
         }
 
         // Let the active context engine run its post-turn lifecycle.
@@ -2782,7 +2817,7 @@ export async function runEmbeddedAttempt(
           lastAssistant?.errorMessage && isCloudCodeAssistFormatError(lastAssistant.errorMessage),
         ),
         attemptUsage: getUsageTotals(),
-        compactionCount: getCompactionCount(),
+        compactionCount: getCompactionCount() + (backgroundCompactionCommitted ? 1 : 0),
         // Client tool call detected (OpenResponses hosted tools)
         clientToolCall: clientToolCallDetected ?? undefined,
         yieldDetected: yieldDetected || undefined,

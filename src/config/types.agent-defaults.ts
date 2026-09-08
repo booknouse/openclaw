@@ -297,6 +297,16 @@ export type AgentCompactionQualityGuardConfig = {
 };
 
 export type AgentCompactionConfig = {
+  /** Opt-in proactive summarization. Native compaction remains the hard-limit fallback. */
+  background?: {
+    enabled?: boolean;
+    triggerRatio?: number;
+    maxOutputTokens?: number;
+    timeoutMs?: number;
+    retryDelayMs?: number;
+    maxConcurrent?: number;
+    reserveTokens?: number;
+  };
   /** Compaction summarization mode. */
   mode?: AgentCompactionMode;
   /** Pi reserve tokens target before floor enforcement. */

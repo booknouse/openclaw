@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { cancelBackgroundCompactionForSession } from "../../agents/background-compaction-state.js";
 import { loadConfig } from "../../config/config.js";
 import {
   loadSessionStore,
@@ -43,6 +44,9 @@ import {
 } from "../session-utils.js";
 import { applySessionsPatchToStore } from "../sessions-patch.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
+import { sessionsContext } from "./sessions-context.js";
+import { MAX_RETIRE_BATCH_SIZE, retireIdleSessions } from "./sessions-retire-batch.js";
+import { retireIdleSession } from "./sessions-retire.js";
 import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -93,6 +97,31 @@ function rejectWebchatSessionMutation(params: {
 }
 
 export const sessionsHandlers: GatewayRequestHandlers = {
+  "sessions.retire": async ({ params, respond, client, isWebchatConnect }) => {
+    if (
+      Object.keys(params).some((key) => key !== "keys") ||
+      !Array.isArray(params.keys) ||
+      !params.keys.length ||
+      params.keys.length > MAX_RETIRE_BATCH_SIZE ||
+      params.keys.some((key) => typeof key !== "string" || !key.trim() || key.length > 4096)
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "expected 1–20 session keys"),
+      );
+      return;
+    }
+    if (rejectWebchatSessionMutation({ action: "delete", client, isWebchatConnect, respond })) {
+      return;
+    }
+    const results = await retireIdleSessions(
+      loadConfig(),
+      params.keys.map((key: string) => key.trim()),
+    );
+    respond(true, { results }, undefined);
+  },
+  "sessions.context": sessionsContext,
   "sessions.list": ({ params, respond }) => {
     if (!assertValidParams(params, validateSessionsListParams, "sessions.list", respond)) {
       return;
@@ -276,6 +305,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const deleteTranscript = typeof p.deleteTranscript === "boolean" ? p.deleteTranscript : true;
 
     const { entry, legacyKey, canonicalKey } = loadSessionEntry(key);
+    if (p.onlyIfIdle === true) {
+      const result = await retireIdleSession({ cfg, key, target, entry, deleteTranscript });
+      respond(true, { key: target.canonicalKey, ...result }, undefined);
+      return;
+    }
     const mutationCleanupError = await cleanupSessionBeforeMutation({
       cfg,
       key,
@@ -288,6 +322,9 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     if (mutationCleanupError) {
       respond(false, undefined, mutationCleanupError);
       return;
+    }
+    if (entry?.sessionId) {
+      cancelBackgroundCompactionForSession(entry.sessionId);
     }
     const sessionId = entry?.sessionId;
     const deleted = await updateSessionStore(storePath, (store) => {

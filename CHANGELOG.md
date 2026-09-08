@@ -2,6 +2,14 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortext.3
+
+### Changes
+
+- Agents/compaction: add opt-in background summarization with a dedicated model, bounded concurrency and deadlines, and native compaction commits that preserve the session ID and messages received during summarization.
+- Gateway/sessions: add single-session context and handoff queries, plus bounded idle-only batch retirement with one index update per backing store and runtime/queue/write-lock checks.
+- Sessions/archives: add configurable permanent archive storage through `session.archive.directory`. Save independent transcript snapshots and manifests before retiring the live index; retain originals on archive failure and keep permanent archives outside automatic maintenance.
+
 ## 2026.3.13-cortex.2
 
 ### Changes

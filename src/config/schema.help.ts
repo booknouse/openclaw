@@ -1041,8 +1041,24 @@ export const FIELD_HELP: Record<string, string> = {
     'Controls post-compaction session memory reindex mode: "off", "async", or "await" (default: "async"). Use "await" for strongest freshness, "async" for lower compaction latency, and "off" only when session-memory sync is handled elsewhere.',
   "agents.defaults.compaction.postCompactionSections":
     'AGENTS.md H2/H3 section names re-injected after compaction so the agent reruns critical startup guidance. Leave unset to use "Session Startup"/"Red Lines" with legacy fallback to "Every Session"/"Safety"; set to [] to disable reinjection entirely.',
+  "agents.defaults.compaction.background":
+    "Prepare summaries asynchronously and commit them at the next safe turn boundary. Disabled by default; requires an explicit compaction.model.",
+  "agents.defaults.compaction.background.enabled":
+    "Enable asynchronous compaction for the built-in context engine. Requires compaction.model; native compaction remains the capacity fallback.",
+  "agents.defaults.compaction.background.triggerRatio":
+    "Context utilization that starts background summarization (default: 0.7; range: 0.3\u20130.85).",
+  "agents.defaults.compaction.background.maxOutputTokens":
+    "Maximum summary output tokens (default: 4096).",
+  "agents.defaults.compaction.background.timeoutMs":
+    "Deadline for one background summary request (default: 60000 ms).",
+  "agents.defaults.compaction.background.retryDelayMs":
+    "Minimum delay before retrying a failed summary (default: 60000 ms).",
+  "agents.defaults.compaction.background.maxConcurrent":
+    "Maximum concurrent background summaries per gateway process (default: 2).",
+  "agents.defaults.compaction.background.reserveTokens":
+    "Remaining context capacity reserved for incoming turns and Server fallback rotation (default: 20000 tokens).",
   "agents.defaults.compaction.model":
-    "Optional provider/model override used only for compaction summarization. Set this when you want compaction to run on a different model than the session default, and leave it unset to keep using the primary agent model.",
+    "Optional provider/model override used only for compaction summarization. Set this when you want compaction to run on a different model than the session default, and leave it unset to keep using the primary agent model for synchronous compaction. Required when background.enabled is true.",
   "agents.defaults.compaction.memoryFlush":
     "Pre-compaction memory flush settings that run an agentic memory write before heavy compaction. Keep enabled for long sessions so salient context is persisted before aggressive trimming.",
   "agents.defaults.compaction.memoryFlush.enabled":
@@ -1170,6 +1186,10 @@ export const FIELD_HELP: Record<string, string> = {
     "Caps total session entry count retained in the store to prevent unbounded growth over time. Use lower limits for constrained environments, or higher limits when longer history is required.",
   "session.maintenance.rotateBytes":
     "Rotates the session store when file size exceeds a threshold such as `10mb` or `1gb`. Use this to bound single-file growth and keep backup/restore operations manageable.",
+  "session.archive":
+    "Permanent storage for retired runtime transcripts. Archives are retained indefinitely, outside session expiry and disk-budget cleanup. Configure before enabling runtime retirement.",
+  "session.archive.directory":
+    "Absolute archive directory outside OpenClaw state and live session directories. No default path. Retirement is skipped when unconfigured or unavailable. Existing .deleted archives are not moved automatically.",
   "session.maintenance.resetArchiveRetention":
     "Retention for reset transcript archives (`*.reset.<timestamp>`). Accepts a duration (for example `30d`), or `false` to disable cleanup. Defaults to pruneAfter so reset artifacts do not grow forever.",
   "session.maintenance.maxDiskBytes":

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { z } from "zod";
 import { parseByteSize } from "../cli/parse-bytes.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
@@ -50,6 +51,16 @@ export const SessionSchema = z
       .optional(),
     resetByChannel: z.record(z.string(), SessionResetConfigSchema).optional(),
     store: z.string().optional(),
+    archive: z
+      .object({
+        directory: z
+          .string()
+          .trim()
+          .min(1)
+          .refine(path.isAbsolute, "Expected an absolute archive directory"),
+      })
+      .strict()
+      .optional(),
     typingIntervalSeconds: z.number().int().positive().optional(),
     typingMode: TypingModeSchema.optional(),
     parentForkMaxTokens: z.number().int().nonnegative().optional(),

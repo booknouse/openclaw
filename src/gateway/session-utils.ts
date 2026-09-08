@@ -557,6 +557,7 @@ function resolveGatewaySessionStoreLookup(params: {
   canonicalKey: string;
   agentId: string;
   initialStore?: Record<string, SessionEntry>;
+  storeCache?: Map<string, Record<string, SessionEntry>>;
 }): {
   storePath: string;
   store: Record<string, SessionEntry>;
@@ -569,7 +570,16 @@ function resolveGatewaySessionStoreLookup(params: {
     storePath: resolveStorePath(params.cfg.session?.store, { agentId: params.agentId }),
   };
   let selectedStorePath = fallback.storePath;
-  let selectedStore = params.initialStore ?? loadSessionStore(fallback.storePath);
+  const readStore = (storePath: string) => {
+    const cached = params.storeCache?.get(storePath);
+    if (cached) {
+      return cached;
+    }
+    const loaded = loadSessionStore(storePath);
+    params.storeCache?.set(storePath, loaded);
+    return loaded;
+  };
+  let selectedStore = params.initialStore ?? readStore(fallback.storePath);
   let selectedMatch = findStoreMatch(selectedStore, ...scanTargets);
   let selectedUpdatedAt = selectedMatch?.entry.updatedAt ?? Number.NEGATIVE_INFINITY;
 
@@ -578,7 +588,7 @@ function resolveGatewaySessionStoreLookup(params: {
     if (!candidate) {
       continue;
     }
-    const store = loadSessionStore(candidate.storePath);
+    const store = readStore(candidate.storePath);
     const match = findStoreMatch(store, ...scanTargets);
     if (!match) {
       continue;
@@ -606,6 +616,7 @@ export function resolveGatewaySessionStoreTarget(params: {
   key: string;
   scanLegacyKeys?: boolean;
   store?: Record<string, SessionEntry>;
+  storeCache?: Map<string, Record<string, SessionEntry>>;
 }): {
   agentId: string;
   storePath: string;
@@ -624,6 +635,7 @@ export function resolveGatewaySessionStoreTarget(params: {
     canonicalKey,
     agentId,
     initialStore: params.store,
+    storeCache: params.storeCache,
   });
 
   if (canonicalKey === "global" || canonicalKey === "unknown") {
