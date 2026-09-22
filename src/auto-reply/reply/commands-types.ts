@@ -25,6 +25,7 @@ export type CommandContext = {
 };
 
 export type HandleCommandsParams = {
+  abortSignal?: AbortSignal;
   ctx: MsgContext;
   rootCtx?: MsgContext;
   cfg: OpenClawConfig;

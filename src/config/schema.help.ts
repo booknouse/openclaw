@@ -1042,9 +1042,9 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.compaction.postCompactionSections":
     'AGENTS.md H2/H3 section names re-injected after compaction so the agent reruns critical startup guidance. Leave unset to use "Session Startup"/"Red Lines" with legacy fallback to "Every Session"/"Safety"; set to [] to disable reinjection entirely.',
   "agents.defaults.compaction.background":
-    "Prepare summaries asynchronously and commit them at the next safe turn boundary. Disabled by default; requires an explicit compaction.model.",
+    "Prepare summaries asynchronously and commit them at the next safe turn boundary. Disabled by default; requires compaction.models.primary or compaction.model.",
   "agents.defaults.compaction.background.enabled":
-    "Enable asynchronous compaction for the built-in context engine. Requires compaction.model; native compaction remains the capacity fallback.",
+    "Enable asynchronous compaction for the built-in context engine. Requires compaction.models.primary or compaction.model; native compaction remains the capacity fallback.",
   "agents.defaults.compaction.background.triggerRatio":
     "Context utilization that starts background summarization (default: 0.7; range: 0.3\u20130.85).",
   "agents.defaults.compaction.background.maxOutputTokens":
@@ -1054,13 +1054,29 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.compaction.background.retryDelayMs":
     "Minimum delay before retrying a failed summary (default: 60000 ms).",
   "agents.defaults.compaction.background.maxConcurrent":
-    "Maximum concurrent background summaries per gateway process (default: 2).",
+    "Legacy single-model concurrency per gateway process (default: 4). When compaction.models is configured, background task capacity is the sum of those model pool limits and this legacy setting is ignored.",
   "agents.defaults.compaction.background.reserveTokens":
     "Remaining context capacity reserved for incoming turns and Server fallback rotation (default: 20000 tokens).",
+  "agents.defaults.compaction.models":
+    "Ordered model pools shared by synchronous, manual and background compaction per gateway process. Overrides the legacy model and background.maxConcurrent settings. If both pools are full, requests wait within their existing timeout budget.",
+  "agents.defaults.compaction.models.primary":
+    "Preferred compaction model pool. Every request uses this pool when it has capacity.",
+  "agents.defaults.compaction.models.primary.model":
+    "Preferred provider/model for compaction summaries. Unqualified model names use the dialogue provider.",
+  "agents.defaults.compaction.models.primary.maxConcurrent":
+    "Maximum concurrent summary requests for the preferred model per gateway process (default: 4, range: 1-128). Shared by all sessions and compaction paths.",
+  "agents.defaults.compaction.models.secondary":
+    "Optional second model pool, used only while the preferred model pool is full. Provider errors do not trigger automatic failover.",
+  "agents.defaults.compaction.models.secondary.model":
+    "Secondary provider/model for compaction summaries. Must differ from the preferred model; credentials are resolved for the selected provider.",
+  "agents.defaults.compaction.models.secondary.maxConcurrent":
+    "Maximum concurrent summary requests for the secondary model per gateway process (default: 10, range: 1-128). Requests prefer the primary again when it has capacity.",
   "agents.defaults.compaction.model":
-    "Optional provider/model override used only for compaction summarization. Set this when you want compaction to run on a different model than the session default, and leave it unset to keep using the primary agent model for synchronous compaction. Required when background.enabled is true.",
+    "Optional provider/model override used only for compaction summarization. Set this when you want compaction to run on a different model than the session default, and leave it unset to keep using the primary agent model for synchronous compaction. Used when compaction.models is unset. Background compaction requires this or compaction.models.primary.",
   "agents.defaults.compaction.memoryFlush":
     "Pre-compaction memory flush settings that run an agentic memory write before heavy compaction. Keep enabled for long sessions so salient context is persisted before aggressive trimming.",
+  "agents.defaults.compaction.memoryFlush.background":
+    "Run memory maintenance on an isolated transcript after replies, independently of background compaction. When unset, follows compaction.background.enabled.",
   "agents.defaults.compaction.memoryFlush.enabled":
     "Enables pre-compaction memory flush before the runtime performs stronger history reduction near token limits. Keep enabled unless you intentionally disable memory side effects in constrained environments.",
   "agents.defaults.compaction.memoryFlush.softThresholdTokens":

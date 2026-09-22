@@ -1,8 +1,12 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { AgentCompactionIdentifierPolicy } from "../../config/types.agent-defaults.js";
+import type { CompactionSummaryRunner } from "../compaction-model.runtime.js";
 import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-registry.js";
 
 export type CompactionSafeguardRuntimeValue = {
+  abortSignal?: AbortSignal;
+  /** Share the bounded concise generator with background compaction. */
+  conciseSummary?: boolean;
   maxHistoryShare?: number;
   contextWindowTokens?: number;
   identifierPolicy?: AgentCompactionIdentifierPolicy;
@@ -14,6 +18,13 @@ export type CompactionSafeguardRuntimeValue = {
    * (extensionRunner.initialize() is never called in that path).
    */
   model?: Model<Api>;
+  resolveModel?: () => Promise<{
+    model: Model<Api>;
+    apiKey: string;
+    contextWindow?: number;
+    runSummary?: CompactionSummaryRunner;
+  }>;
+  modelConcurrency?: number;
   recentTurnsPreserve?: number;
   qualityGuardEnabled?: boolean;
   qualityGuardMaxRetries?: number;

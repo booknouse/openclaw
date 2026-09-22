@@ -15,6 +15,9 @@ import {
   backgroundSnapshotMatches,
   estimateBackgroundContextTokens,
 } from "../../agents/background-compaction.js";
+import { compactionModelReference } from "../../agents/compaction-model-config.js";
+import { getCompactionStatus } from "../../agents/compaction-status.js";
+import { getNativeCompactionFailure } from "../../agents/native-compaction-state.js";
 import { isEmbeddedPiRunActive } from "../../agents/pi-embedded.js";
 import { stripToolResultDetails } from "../../agents/session-transcript-repair.js";
 import { loadConfig } from "../../config/config.js";
@@ -24,6 +27,7 @@ import {
   resolveGatewaySessionStoreTarget,
   resolveSessionTranscriptCandidates,
 } from "../session-utils.js";
+import { cachedContext, cacheContext, contextFileSignature } from "./session-context-cache.js";
 import type { GatewayRequestHandler } from "./types.js";
 
 /** A single-session lookup; callers need not transfer the entire global status/index. */
@@ -46,8 +50,18 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
   const store = loadSessionStore(target.storePath);
   const entry = target.storeKeys.map((key) => store[key]).find(Boolean);
   const enabled = backgroundCompactionEnabled(cfg);
+  const engine = cfg.plugins?.slots?.contextEngine;
+  const mode = enabled
+    ? "background"
+    : compactionModelReference(cfg.agents?.defaults?.compaction) && (!engine || engine === "legacy")
+      ? "on-demand"
+      : "disabled";
   if (!entry?.sessionId) {
-    respond(true, { exists: false, backgroundCompaction: { enabled, state: "idle" } }, undefined);
+    respond(
+      true,
+      { exists: false, backgroundCompaction: { enabled, mode, state: "idle" } },
+      undefined,
+    );
     return;
   }
   const file = resolveSessionTranscriptCandidates(
@@ -58,7 +72,8 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
   ).find((path) => fs.existsSync(path));
   const budget = entry.contextTokens ?? cfg.agents?.defaults?.contextTokens;
   const reserve = cfg.agents?.defaults?.compaction?.background?.reserveTokens ?? 20_000;
-  const running = isEmbeddedPiRunActive(entry.sessionId);
+  const running =
+    isEmbeddedPiRunActive(entry.sessionId) || getCompactionStatus(entry.sessionId).blocking;
   if (!file) {
     respond(
       true,
@@ -66,10 +81,54 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
         exists: true,
         sessionId: entry.sessionId,
         running,
-        backgroundCompaction: { enabled, state: "idle" },
+        usedTokens: 0,
+        contextTokens: budget,
+        compaction: getCompactionStatus(entry.sessionId),
+        contextCapabilities: { statusVersion: 1, rejectIfCompacting: true },
+        observedAt: new Date().toISOString(),
+        source: "context_estimate",
+        backgroundCompaction: { enabled, mode, state: "idle" },
       },
       undefined,
     );
+    return;
+  }
+  const jobBeforeRead = getBackgroundCompactionJob(file);
+  const fileSignature = contextFileSignature(file, entry.sessionId);
+  const signature = `${fileSignature}:${mode}:${budget}:${jobBeforeRead?.state ?? "idle"}`;
+  const reply = (body: Record<string, unknown>) => {
+    const compaction = getCompactionStatus(entry.sessionId);
+    const previous = body.backgroundCompaction as Record<string, unknown>;
+    const failure = mode === "on-demand" ? getNativeCompactionFailure(file) : undefined;
+    const failed =
+      failure &&
+      (!previous.lastCompactionAt ||
+        Date.parse(typeof previous.lastCompactionAt === "string" ? previous.lastCompactionAt : "") <
+          failure.failedAt);
+    respond(
+      true,
+      {
+        ...body,
+        running,
+        contextTokens: budget,
+        compaction,
+        contextCapabilities: { statusVersion: 1, rejectIfCompacting: true },
+        backgroundCompaction: {
+          ...previous,
+          ...(mode === "on-demand"
+            ? { state: compaction.blocking ? "running" : failed ? "failed" : "idle" }
+            : {}),
+        },
+      },
+      undefined,
+    );
+  };
+  const cached =
+    params.handoff !== true && jobBeforeRead?.state !== "ready"
+      ? cachedContext(file, signature)
+      : undefined;
+  if (cached) {
+    reply(cached);
     return;
   }
   const manager = SessionManager.open(file);
@@ -99,33 +158,70 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
       Math.max(0, used - textEstimate)
     : used;
   const last = entries.findLast((item) => item.type === "compaction");
+  const observedFailure = mode === "on-demand" ? getNativeCompactionFailure(file) : undefined;
+  const nativeFailure =
+    observedFailure && (!last || Date.parse(last.timestamp) < observedFailure.failedAt)
+      ? observedFailure
+      : undefined;
   const handoff =
     params.handoff === true
       ? serializeConversation(convertToLlm(stripToolResultDetails(effectiveMessages)))
       : undefined;
-  respond(
-    true,
-    {
-      exists: true,
-      sessionId: entry.sessionId,
-      running,
-      usedTokens: used,
-      contextTokens: budget,
-      compactionCount: entries.filter((item) => item.type === "compaction").length,
-      backgroundCompaction: {
-        enabled,
-        ...getBackgroundCompactionStatus(file),
-        state: ready
-          ? "ready"
-          : job?.state === "ready"
-            ? "idle"
-            : getBackgroundCompactionStatus(file).state,
-        effectiveUsedTokens: effective,
-        reserveTokens: reserve,
-        lastCompactionAt: last?.timestamp,
-      },
-      ...(handoff !== undefined ? { handoff: { text: handoff, complete: true } } : {}),
+  const payload = {
+    observedAt: new Date().toISOString(),
+    source: "context_estimate",
+    exists: true,
+    sessionId: entry.sessionId,
+    running,
+    usedTokens: used,
+    contextTokens: budget,
+    compactionCount: entries.filter((item) => item.type === "compaction").length,
+    backgroundCompaction: {
+      enabled,
+      mode,
+      ...(enabled ? getBackgroundCompactionStatus(file) : {}),
+      state:
+        mode === "on-demand"
+          ? nativeFailure
+            ? "failed"
+            : "idle"
+          : ready
+            ? "ready"
+            : job?.state === "ready"
+              ? "idle"
+              : getBackgroundCompactionStatus(file).state,
+      ...(nativeFailure
+        ? { reason: "native_compaction_failed", failedAt: nativeFailure.failedAt }
+        : {}),
+      effectiveUsedTokens: effective,
+      reserveTokens: reserve,
+      lastCompactionAt: last?.timestamp,
+      lastCompactionId: last?.id,
+      checkpointVersion: 1,
     },
-    undefined,
-  );
+    ...(handoff !== undefined ? { handoff: { text: handoff, complete: true } } : {}),
+    // A recovery checkpoint always reflects committed history, never a ready preview.
+    ...(params.handoff === true && !running
+      ? {
+          checkpoint: {
+            version: 1,
+            sessionId: entry.sessionId,
+            compactionId: last?.id ?? null,
+            compactionTimestamp: last?.timestamp ?? null,
+            firstKeptEntryId: last?.firstKeptEntryId ?? null,
+            tailEntryId: entries.at(-1)?.id ?? null,
+            text: serializeConversation(convertToLlm(stripToolResultDetails(messages))),
+            complete: true,
+          },
+        }
+      : {}),
+  };
+  if (
+    params.handoff !== true &&
+    jobBeforeRead?.state !== "ready" &&
+    contextFileSignature(file, entry.sessionId) === fileSignature
+  ) {
+    cacheContext(file, signature, payload);
+  }
+  reply(payload);
 };

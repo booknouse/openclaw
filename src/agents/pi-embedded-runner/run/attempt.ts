@@ -35,6 +35,7 @@ import { resolveOpenClawAgentDir } from "../../agent-paths.js";
 import { resolveSessionAgentIds } from "../../agent-scope.js";
 import { createAnthropicPayloadLogger } from "../../anthropic-payload-log.js";
 import {
+  backgroundCompactionEnabled,
   commitReadyBackgroundCompaction,
   scheduleBackgroundCompaction,
 } from "../../background-compaction.js";
@@ -1784,16 +1785,21 @@ export async function runEmbeddedAttempt(
       applyPiAutoCompactionGuard({
         settingsManager,
         contextEngineInfo: params.contextEngine?.info,
+        backgroundCompaction:
+          params.trigger === "memory" || backgroundCompactionEnabled(params.config),
       });
 
       // Sets compaction/pruning runtime state and returns extension factories
       // that must be passed to the resource loader for the safeguard to be active.
       const extensionFactories = buildEmbeddedExtensionFactories({
+        abortSignal: runAbortController.signal,
         cfg: params.config,
         sessionManager,
         provider: params.provider,
         modelId: params.modelId,
         model: params.model,
+        agentDir,
+        authProfileId: params.authProfileId,
       });
       // Only create an explicit resource loader when there are extension factories
       // to register; otherwise let createAgentSession use its built-in default.
@@ -2628,7 +2634,13 @@ export async function runEmbeddedAttempt(
         }
 
         // This only schedules work; the provider request runs after releasing the session lock.
-        if (!promptError && !params.contextEngine?.info.ownsCompaction) {
+        if (
+          !promptError &&
+          !aborted &&
+          !params.abortSignal?.aborted &&
+          params.trigger !== "memory" &&
+          !params.contextEngine?.info.ownsCompaction
+        ) {
           scheduleBackgroundCompaction({
             config: params.config,
             sessionId: sessionIdUsed,

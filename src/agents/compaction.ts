@@ -4,6 +4,9 @@ import { estimateTokens, generateSummary } from "@mariozechner/pi-coding-agent";
 import type { AgentCompactionIdentifierPolicy } from "../config/types.agent-defaults.js";
 import { retryAsync } from "../infra/retry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { runCompactionModelCall } from "./compaction-model-limiter.js";
+import type { CompactionSummaryRunner } from "./compaction-model.runtime.js";
+import { compactionSummaryFits, generateCompactionSummary } from "./compaction-summary.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { repairToolUseResultPairing, stripToolResultDetails } from "./session-transcript-repair.js";
 
@@ -218,6 +221,9 @@ async function summarizeChunks(params: {
   customInstructions?: string;
   summarizationInstructions?: CompactionSummarizationInstructions;
   previousSummary?: string;
+  modelConcurrency?: number;
+  runSummary?: CompactionSummaryRunner;
+  concise?: boolean;
 }): Promise<string> {
   if (params.messages.length === 0) {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
@@ -232,26 +238,67 @@ async function summarizeChunks(params: {
     params.summarizationInstructions,
   );
   for (const chunk of chunks) {
+    params.signal.throwIfAborted();
+    const startedAt = Date.now();
     summary = await retryAsync(
-      () =>
-        generateSummary(
-          chunk,
-          params.model,
-          params.reserveTokens,
-          params.apiKey,
-          params.signal,
-          effectiveInstructions,
-          summary,
-        ),
+      () => {
+        params.signal.throwIfAborted();
+        const generate = (model: typeof params.model, apiKey: string) =>
+          params.concise
+            ? generateCompactionSummary({
+                messages: chunk,
+                model,
+                apiKey,
+                signal: params.signal,
+                previousSummary: summary,
+                customInstructions: effectiveInstructions,
+                identifierPolicy: params.summarizationInstructions?.identifierPolicy,
+                maxOutputTokens: 4096,
+              })
+            : generateSummary(
+                chunk,
+                { ...model, reasoning: false },
+                Math.min(
+                  params.reserveTokens,
+                  Math.floor(Math.min(model.maxTokens ?? 4096, 4096) / 0.8),
+                ),
+                apiKey,
+                params.signal,
+                effectiveInstructions,
+                summary,
+              );
+        if (params.runSummary) {
+          return params.runSummary(params.signal, generate);
+        }
+        return runCompactionModelCall({
+          signal: params.signal,
+          pools: [
+            {
+              key: `${params.model.provider}/${params.model.id}`,
+              maxConcurrent: params.modelConcurrency ?? 4,
+            },
+          ],
+          run: () => generate(params.model, params.apiKey),
+        });
+      },
       {
         attempts: 3,
         minDelayMs: 500,
         maxDelayMs: 5000,
         jitter: 0.2,
         label: "compaction/generateSummary",
-        shouldRetry: (err) => !(err instanceof Error && err.name === "AbortError"),
+        shouldRetry: (err) =>
+          !params.signal.aborted &&
+          !(
+            err instanceof Error &&
+            (err.name === "AbortError" ||
+              /\b(?:400|401|403|404|422)\b|model_not_found|invalid_api_key|context_length_exceeded/i.test(
+                err.message,
+              ))
+          ),
       },
     );
+    log.debug(`summary chunk messages=${chunk.length} durationMs=${Date.now() - startedAt}`);
   }
 
   return summary ?? DEFAULT_SUMMARY_FALLBACK;
@@ -272,6 +319,9 @@ export async function summarizeWithFallback(params: {
   customInstructions?: string;
   summarizationInstructions?: CompactionSummarizationInstructions;
   previousSummary?: string;
+  modelConcurrency?: number;
+  runSummary?: CompactionSummaryRunner;
+  concise?: boolean;
 }): Promise<string> {
   const { messages, contextWindow } = params;
 
@@ -279,10 +329,17 @@ export async function summarizeWithFallback(params: {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
   }
 
+  let failure: unknown;
+
   // Try full summarization first
   try {
     return await summarizeChunks(params);
   } catch (fullError) {
+    failure = fullError;
+    params.signal.throwIfAborted();
+    if (fullError instanceof Error && fullError.name === "AbortError") {
+      throw fullError;
+    }
     log.warn(
       `Full summarization failed, trying partial: ${
         fullError instanceof Error ? fullError.message : String(fullError)
@@ -306,7 +363,7 @@ export async function summarizeWithFallback(params: {
     }
   }
 
-  if (smallMessages.length > 0) {
+  if (smallMessages.length > 0 && oversizedNotes.length > 0) {
     try {
       const partialSummary = await summarizeChunks({
         ...params,
@@ -315,6 +372,11 @@ export async function summarizeWithFallback(params: {
       const notes = oversizedNotes.length > 0 ? `\n\n${oversizedNotes.join("\n")}` : "";
       return partialSummary + notes;
     } catch (partialError) {
+      failure = partialError;
+      params.signal.throwIfAborted();
+      if (partialError instanceof Error && partialError.name === "AbortError") {
+        throw partialError;
+      }
       log.warn(
         `Partial summarization also failed: ${
           partialError instanceof Error ? partialError.message : String(partialError)
@@ -323,11 +385,8 @@ export async function summarizeWithFallback(params: {
     }
   }
 
-  // Final fallback: Just note what was there
-  return (
-    `Context contained ${messages.length} messages (${oversizedNotes.length} oversized). ` +
-    `Summary unavailable due to size limits.`
-  );
+  // A failed provider call is not a summary. Keep the original transcript intact.
+  throw failure ?? new Error("compaction_summary_unavailable");
 }
 
 export async function summarizeInStages(params: {
@@ -341,12 +400,34 @@ export async function summarizeInStages(params: {
   customInstructions?: string;
   summarizationInstructions?: CompactionSummarizationInstructions;
   previousSummary?: string;
+  modelConcurrency?: number;
+  runSummary?: CompactionSummaryRunner;
+  concise?: boolean;
   parts?: number;
   minMessagesForSplit?: number;
 }): Promise<string> {
   const { messages } = params;
   if (messages.length === 0) {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
+  }
+
+  if (
+    params.concise &&
+    compactionSummaryFits(
+      {
+        messages,
+        previousSummary: params.previousSummary,
+        customInstructions: buildCompactionSummarizationInstructions(
+          params.customInstructions,
+          params.summarizationInstructions,
+        ),
+      },
+      Math.min(params.contextWindow, params.model.contextWindow),
+    )
+  ) {
+    // The native history cut is unchanged. Avoid partition summaries and a merge
+    // when the actual serialized request fits the dedicated model's window.
+    return summarizeChunks({ ...params, maxChunkTokens: Number.MAX_SAFE_INTEGER });
   }
 
   const minMessagesForSplit = Math.max(2, params.minMessagesForSplit ?? 4);
@@ -362,16 +443,22 @@ export async function summarizeInStages(params: {
     return summarizeWithFallback(params);
   }
 
-  const partialSummaries: string[] = [];
-  for (const chunk of splits) {
-    partialSummaries.push(
-      await summarizeWithFallback({
-        ...params,
-        messages: chunk,
-        previousSummary: undefined,
-      }),
-    );
-  }
+  const partialSummaries: string[] = Array.from({ length: splits.length }, () => "");
+  let next = 0;
+  // Independent partitions can run concurrently; rolling chunks within one partition cannot.
+  await Promise.all(
+    Array.from({ length: Math.min(2, splits.length) }, async () => {
+      while (next < splits.length) {
+        params.signal.throwIfAborted();
+        const index = next++;
+        partialSummaries[index] = await summarizeWithFallback({
+          ...params,
+          messages: splits[index],
+          previousSummary: undefined,
+        });
+      }
+    }),
+  );
 
   if (partialSummaries.length === 1) {
     return partialSummaries[0];

@@ -987,6 +987,18 @@ export async function runEmbeddedPiAgent(
               })()
             : null;
 
+          if (contextOverflowError && params.trigger === "memory") {
+            return {
+              payloads: [],
+              meta: {
+                durationMs: Date.now() - started,
+                error: {
+                  kind: "context_overflow",
+                  message: "Memory maintenance snapshot exceeds model capacity",
+                },
+              },
+            };
+          }
           if (contextOverflowError) {
             const overflowDiagId = createCompactionDiagId();
             const errorText = contextOverflowError.text;
@@ -1083,6 +1095,7 @@ export async function runEmbeddedPiAgent(
                     extraSystemPrompt: params.extraSystemPrompt,
                     ownerNumbers: params.ownerNumbers,
                     trigger: "overflow",
+                    abortSignal: params.abortSignal,
                     ...(observedOverflowTokens !== undefined
                       ? { currentTokenCount: observedOverflowTokens }
                       : {}),

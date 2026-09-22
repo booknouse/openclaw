@@ -18,6 +18,10 @@ import {
   type BackgroundCompactionJob,
   type BackgroundCompactionPreparation,
 } from "./background-compaction-state.js";
+import {
+  compactionBackgroundConcurrency,
+  compactionModelReference,
+} from "./compaction-model-config.js";
 import { stripToolResultDetails } from "./session-transcript-repair.js";
 
 const log = createSubsystemLogger("background-compaction");
@@ -48,7 +52,9 @@ function fingerprint(entries: SessionEntry[]): string {
 
 export function estimateBackgroundContextTokens(messages: AgentMessage[]): number {
   let estimate = 0;
+  let contentEstimate = 0;
   for (const message of stripToolResultDetails(messages)) {
+    contentEstimate += estimateTokens(message);
     if (
       message.role === "assistant" &&
       message.stopReason !== "error" &&
@@ -62,7 +68,7 @@ export function estimateBackgroundContextTokens(messages: AgentMessage[]): numbe
       estimate += estimateTokens(message);
     }
   }
-  return estimate;
+  return Math.max(estimate, contentEstimate);
 }
 
 export function prepareBackgroundCompaction(
@@ -122,34 +128,67 @@ function messageText(message: AgentMessage): string {
     : "";
 }
 
-/** Keep explicit user constraints and precise operational identifiers outside the generated summary. */
+/** Keep explicit user constraints verbatim and precise identifiers without accumulating prose. */
 export function collectProtectedContext(messages: AgentMessage[], previous?: string): string {
-  const lines = new Set<string>();
+  const constraints = new Set<string>();
+  const identifiers = new Set<string>();
   const marker = "\n<protected-context>\n";
+  const constraintPattern = /不得|禁止|不要|必须|严禁|只读|do not|must|never/i;
+  const identifierPattern =
+    /(?:\/[\w.@-]+){2,}|\b[\w.-]+\.(?:py|ps1|sh|sql|ts)\b|\b(?:[a-f\d]{12,40}|[A-Z][A-Z\d_]+-\d[\w-]*)\b/g;
+  const collect = (line: string, preserveConstraint: boolean) => {
+    const value = line.trim();
+    if (!value) {
+      return;
+    }
+    if (preserveConstraint && constraintPattern.test(value)) {
+      constraints.add(value);
+    }
+    for (const match of value.matchAll(identifierPattern)) {
+      identifiers.add(match[0]);
+    }
+  };
+  // Upgrade old protected blocks in place: retain constraints, deduplicate identifier tokens.
   const old = previous?.split(marker)[1]?.split("\n</protected-context>")[0];
   for (const line of old?.split("\n") ?? []) {
-    if (line) {
-      lines.add(line);
-    }
+    collect(line, true);
   }
   for (const message of stripToolResultDetails(messages)) {
     if (message.role !== "user" && message.role !== "assistant") {
       continue;
     }
     for (const line of messageText(message).split("\n")) {
-      if (
-        (message.role === "user" &&
-          /不得|禁止|不要|必须|严禁|只读|do not|must|never/i.test(line)) ||
-        /(?:\/[\w.@-]+){2,}|\b[\w.-]+\.(?:py|ps1|sh|sql|ts)\b|\b(?:[a-f\d]{12,40}|[A-Z][A-Z\d_]+-\d[\w-]*)\b/.test(
-          line,
-        )
-      ) {
-        lines.add(line);
-      }
+      collect(line, message.role === "user");
     }
   }
-  const result = [...lines].join("\n");
-  // Reject rather than silently truncate constraints. The foreground fallback remains available.
+  // Keep one textual representation: constraints already contain some identifiers,
+  // and a full path also preserves its parent directories and basename verbatim.
+  // Do not collapse opaque identifiers merely because one is a substring of another.
+  const represented = new Set<string>();
+  for (const line of constraints) {
+    for (const id of line.matchAll(
+      /(?:\/[\w.@-]+){2,}|\b[\w.-]+\.(?:py|ps1|sh|sql|ts)\b|\b(?:[a-f\d]{12,40}|[A-Z][A-Z\d_]+-\d[\w-]*)\b/g,
+    )) {
+      represented.add(id[0]);
+    }
+  }
+  for (const id of identifiers) {
+    if (!id.startsWith("/")) {
+      continue;
+    }
+    const segments = id.split("/");
+    for (let i = 3; i < segments.length; i++) {
+      represented.add(segments.slice(0, i).join("/"));
+    }
+    const basename = segments.at(-1)!;
+    if (/\.(?:py|ps1|sh|sql|ts)$/.test(basename)) {
+      represented.add(basename);
+    }
+  }
+  const result = [...constraints, ...[...identifiers].filter((id) => !represented.has(id))].join(
+    "\n",
+  );
+  // True oversized constraints still fail safely; never clip user instructions to fit.
   if (result.length > 24_000) {
     throw new Error("protected_context_too_large");
   }
@@ -176,12 +215,20 @@ export function commitReadyBackgroundCompaction(params: BackgroundCompactionPara
     summary,
     job.preparation.firstKeptEntryId,
     job.preparation.tokensBefore,
-    { background: true, model: params.config?.agents?.defaults?.compaction?.model },
+    {
+      background: true,
+      model: job.model ?? compactionModelReference(params.config?.agents?.defaults?.compaction),
+    },
     true,
   );
   cancelBackgroundCompaction(params.sessionFile);
   emitSessionTranscriptUpdate(params.sessionFile);
-  log.info(`committed session=${params.sessionId} retained concurrent messages`);
+  const contentTokens = stripToolResultDetails(
+    params.sessionManager.buildSessionContext().messages,
+  ).reduce((sum, message) => sum + estimateTokens(message), 0);
+  log.info(
+    `committed session=${params.sessionId} concurrentEntries=${entries.length - job.snapshotIds.length} effectiveContentTokens=${contentTokens} summaryChars=${summary.length}`,
+  );
   return true;
 }
 
@@ -214,6 +261,7 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
   const job: BackgroundCompactionJob = {
     state: "running",
     sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
     touchedAt: Date.now(),
     startedAt: Date.now(),
     controller: new AbortController(),
@@ -221,9 +269,12 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
     snapshotHash: fingerprint(entries),
     preparation: structuredClone(preparation),
   };
-  if (!claimBackgroundCompaction(params.sessionFile, job, options.maxConcurrent ?? 2)) {
+  if (!claimBackgroundCompaction(params.sessionFile, job, compactionBackgroundConcurrency(cfg))) {
     return false;
   }
+  log.info(
+    `scheduled session=${params.sessionId} usedTokens=${used} sourceMessages=${preparation.messagesToSummarize.length}`,
+  );
   const timeoutMs = options.timeoutMs ?? 60_000;
   // Limit lifetime independently of whether the provider honors AbortSignal.
   job.timer = setTimeout(() => job.controller.abort(), timeoutMs);
@@ -238,6 +289,9 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
           ...params,
           preparation: job.preparation,
           signal: job.controller.signal,
+          onModelSelected: (model) => {
+            job.model = model;
+          },
         }),
         new Promise<never>((_, reject) => {
           if (job.controller.signal.aborted) {
@@ -267,7 +321,7 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
       job.state = "ready";
       job.finishedAt = Date.now();
       log.info(`ready session=${params.sessionId} durationMs=${job.finishedAt - job.startedAt!}`);
-    } catch {
+    } catch (error) {
       if (getBackgroundCompactionJob(params.sessionFile) !== job) {
         return;
       }
@@ -276,7 +330,17 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
       job.finishedAt = Date.now();
       job.retryAfter = Date.now() + (options.retryDelayMs ?? 60_000);
       // Provider errors can contain credentials; log only a classification.
-      log.warn(`failed session=${params.sessionId} reason=${job.reason}`);
+      const knownFailures = new Set([
+        "protected_context_too_large",
+        "summary_did_not_reduce_context",
+        "background_compaction_incomplete",
+        "background_compaction_invalid_format",
+      ]);
+      const detail =
+        error instanceof Error && knownFailures.has(error.message)
+          ? error.message
+          : "provider_or_internal_error";
+      log.warn(`failed session=${params.sessionId} reason=${job.reason} detail=${detail}`);
     } finally {
       if (job.timer) {
         clearTimeout(job.timer);

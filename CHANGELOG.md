@@ -2,6 +2,20 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.4
+
+### Changes
+
+- Agents/compaction: share concise summaries across native, manual, overflow and background compaction, with bounded primary and secondary model pools and native on-demand coordination.
+- Agents/memory: isolate background memory maintenance in independent transcripts and queues, allowing it to run independently of proactive compaction.
+- Gateway/sessions: expose committed context checkpoints and per-session compaction state, cache unchanged context snapshots, and support opt-in rejection of messages while that session is compacting.
+
+### Fixes
+
+- Agents/compaction: preserve concurrent messages and protected constraints, deduplicate retained identifiers, coordinate cancellation and maintenance, and retain existing context when summarization fails.
+- Agents/compaction: explicitly send `enable_thinking: false` for Qwen compaction even when the configured model has `reasoning: false`.
+- Gateway/sessions: distinguish failed and cancelled compaction from success, ignore stale operation endings, and prevent checkpoint export during manual compaction.
+
 ## 2026.3.13-cortext.3
 
 ### Changes

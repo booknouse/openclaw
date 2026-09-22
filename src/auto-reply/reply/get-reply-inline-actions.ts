@@ -336,6 +336,7 @@ export async function handleInlineActions(params: {
 
   const runCommands = (commandInput: typeof command) =>
     handleCommands({
+      abortSignal: opts?.abortSignal,
       // Pass sessionCtx so command handlers can mutate stripped body for same-turn continuation.
       ctx: sessionCtx,
       // Keep original finalized context in sync when command handlers need outer-dispatch side effects.

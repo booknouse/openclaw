@@ -90,13 +90,25 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
     );
   });
 
+  it("does not compact or truncate history to rescue an overflowing memory task", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({ promptError: makeOverflowError() }),
+    );
+    const result = await runEmbeddedPiAgent({ ...overflowBaseRunParams, trigger: "memory" });
+    expect(result.meta.error?.kind).toBe("context_overflow");
+    expect(mockedCompactDirect).not.toHaveBeenCalled();
+    expect(mockedTruncateOversizedToolResultsInSession).not.toHaveBeenCalled();
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledOnce();
+  });
+
   it("passes trigger=overflow when retrying compaction after context overflow", async () => {
     mockOverflowRetrySuccess({
       runEmbeddedAttempt: mockedRunEmbeddedAttempt,
       compactDirect: mockedCompactDirect,
     });
 
-    await runEmbeddedPiAgent(overflowBaseRunParams);
+    const controller = new AbortController();
+    await runEmbeddedPiAgent({ ...overflowBaseRunParams, abortSignal: controller.signal });
 
     expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
     expect(mockedCompactDirect).toHaveBeenCalledWith(
@@ -105,6 +117,7 @@ describe("runEmbeddedPiAgent overflow compaction trigger routing", () => {
         sessionFile: "/tmp/session.json",
         runtimeContext: expect.objectContaining({
           trigger: "overflow",
+          abortSignal: controller.signal,
           authProfileId: "test-profile",
         }),
       }),

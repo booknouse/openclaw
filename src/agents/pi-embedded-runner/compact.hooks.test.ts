@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import {
+  claimBackgroundCompaction,
+  cancelBackgroundCompaction,
+  releaseBackgroundCompactionSlot,
+  type BackgroundCompactionJob,
+} from "../background-compaction-state.js";
+import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
 
 const {
   hookRunner,
@@ -7,6 +15,7 @@ const {
   resolveContextEngineMock,
   resolveModelMock,
   sessionCompactImpl,
+  sessionAbortCompaction,
   triggerInternalHook,
   sanitizeSessionHistoryMock,
   contextEngineCompactMock,
@@ -41,6 +50,7 @@ const {
       authStorage: { setRuntimeApiKey: vi.fn() },
       modelRegistry: {},
     })),
+    sessionAbortCompaction: vi.fn(),
     sessionCompactImpl: vi.fn(async () => ({
       summary: "summary",
       firstKeptEntryId: "entry-1",
@@ -121,6 +131,7 @@ vi.mock("@mariozechner/pi-coding-agent", () => {
           session.messages.splice(1);
           return await sessionCompactImpl();
         }),
+        abortCompaction: sessionAbortCompaction,
         dispose: vi.fn(),
       };
       return { session };
@@ -142,6 +153,7 @@ vi.mock("../session-tool-result-guard-wrapper.js", () => ({
 }));
 
 vi.mock("../pi-settings.js", () => ({
+  applyPiCompactionSettingsFromConfig: vi.fn(),
   ensurePiCompactionReserveTokens: vi.fn(),
   resolveCompactionReserveTokensFloor: vi.fn(() => 0),
 }));
@@ -151,6 +163,7 @@ vi.mock("../models-config.js", () => ({
 }));
 
 vi.mock("../model-auth.js", () => ({
+  applyLocalNoAuthHeaderOverride: vi.fn((model: unknown) => model),
   getApiKeyForModel: vi.fn(async () => ({ apiKey: "test", mode: "env" })),
   resolveModelAuthMode: vi.fn(() => "env"),
 }));
@@ -390,6 +403,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     hookRunner.runBeforeCompaction.mockReset();
     hookRunner.runAfterCompaction.mockReset();
     mockResolvedModel();
+    sessionAbortCompaction.mockReset();
     sessionCompactImpl.mockReset();
     sessionCompactImpl.mockResolvedValue({
       summary: "summary",
@@ -421,6 +435,115 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     estimateTokensMock.mockReset();
     estimateTokensMock.mockReturnValue(10);
     unregisterApiProviders(getCustomApiRegistrySourceId("ollama"));
+  });
+
+  it("cancels the SDK compaction when the caller aborts", async () => {
+    const controller = new AbortController();
+    let rejectCompaction!: (reason: Error) => void;
+    sessionCompactImpl.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectCompaction = reject;
+        }),
+    );
+    sessionAbortCompaction.mockImplementation(() => rejectCompaction(new Error("cancelled")));
+    const task = compactEmbeddedPiSessionDirect(
+      directCompactionArgs({ abortSignal: controller.signal }),
+    );
+    await vi.waitFor(() => expect(sessionCompactImpl).toHaveBeenCalledOnce());
+    controller.abort();
+    const result = await task;
+    expect(result.compacted).toBe(false);
+    expect(sessionAbortCompaction).toHaveBeenCalledOnce();
+  });
+
+  it("does not start compaction for an already cancelled caller", async () => {
+    const result = await compactEmbeddedPiSessionDirect(
+      directCompactionArgs({ abortSignal: AbortSignal.abort() }),
+    );
+    expect(result).toMatchObject({ ok: false, compacted: false });
+    expect(sessionCompactImpl).not.toHaveBeenCalled();
+    expect(ensureRuntimePluginsLoaded).not.toHaveBeenCalled();
+  });
+
+  function seedBackground(state: "ready" | "running") {
+    const job: BackgroundCompactionJob = {
+      state,
+      sessionId: TEST_SESSION_ID,
+      sessionKey: TEST_SESSION_KEY,
+      touchedAt: Date.now(),
+      controller: new AbortController(),
+      snapshotIds: [],
+      snapshotHash: createHash("sha256").update("[]").digest("hex"),
+      preparation: { firstKeptEntryId: "entry-1", messagesToSummarize: [], tokensBefore: 120 },
+      summary: "background-summary",
+    };
+    expect(claimBackgroundCompaction(TEST_SESSION_FILE, job, 4)).toBe(true);
+    return job;
+  }
+
+  it("uses an already prepared background summary without another model compaction", async () => {
+    const entries: Array<Record<string, unknown>> = [];
+    const manager = {
+      getBranch: () => entries,
+      buildSessionContext: () => ({ messages: [] }),
+      appendCompaction: (
+        summary: string,
+        firstKeptEntryId: string,
+        tokensBefore: number,
+        details: unknown,
+      ) => {
+        entries.push({ type: "compaction", summary, firstKeptEntryId, tokensBefore, details });
+      },
+      flushPendingToolResults: vi.fn(),
+    };
+    vi.mocked(guardSessionManager).mockReturnValueOnce(
+      manager as unknown as ReturnType<typeof guardSessionManager>,
+    );
+    const job = seedBackground("ready");
+    try {
+      const result = await compactEmbeddedPiSessionDirect(
+        directCompactionArgs({
+          customInstructions: undefined,
+          config: {
+            agents: {
+              defaults: { compaction: { model: "test/summary", background: { enabled: true } } },
+            },
+          },
+        }),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        compacted: true,
+        result: { summary: "background-summary" },
+      });
+      expect(sessionCompactImpl).not.toHaveBeenCalled();
+      expect(job.controller.signal.aborted).toBe(true);
+    } finally {
+      cancelBackgroundCompaction(TEST_SESSION_FILE);
+      releaseBackgroundCompactionSlot();
+    }
+  });
+
+  it("cancels an unfinished background job before synchronous compaction takes ownership", async () => {
+    const job = seedBackground("running");
+    sessionCompactImpl.mockImplementation(async () => {
+      expect(job.controller.signal.aborted).toBe(true);
+      return {
+        summary: "foreground",
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 120,
+        details: { ok: true },
+      };
+    });
+    try {
+      const result = await compactEmbeddedPiSessionDirect(directCompactionArgs());
+      expect(result.ok).toBe(true);
+      expect(job.controller.signal.aborted).toBe(true);
+    } finally {
+      cancelBackgroundCompaction(TEST_SESSION_FILE);
+      releaseBackgroundCompactionSlot();
+    }
   });
 
   async function runDirectCompaction(customInstructions = TEST_CUSTOM_INSTRUCTIONS) {
@@ -462,7 +585,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       customInstructions: "focus on decisions",
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(sessionHook("compact:before")).toMatchObject({
       type: "session",
       action: "compact:before",
@@ -511,7 +634,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       customInstructions: "focus on decisions",
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(sessionHook("compact:before")?.sessionKey).toBe("session-1");
     expect(sessionHook("compact:after")?.sessionKey).toBe("session-1");
     expect(hookRunner.runBeforeCompaction).toHaveBeenCalledWith(
@@ -530,7 +653,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
 
     const result = await runDirectCompaction();
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     const beforeContext = sessionHook("compact:before")?.context;
     expect(beforeContext).toMatchObject({
       messageCountOriginal: 0,
@@ -552,7 +675,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
         customInstructions: "focus on decisions",
       });
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.reason).toBe(true);
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledWith({ sessionFile: "/tmp/session.jsonl" });
     } finally {
@@ -645,7 +768,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       }),
     );
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(resolveSessionAgentIdMock).toHaveBeenCalledWith({
       sessionKey: TEST_SESSION_KEY,
       config: expect.any(Object),
@@ -681,7 +804,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
     expect(settled).toBe(false);
     releaseSync?.();
     const result = await resultPromise;
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(settled).toBe(true);
   });
 
@@ -695,7 +818,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       }),
     );
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(resolveSessionAgentIdMock).not.toHaveBeenCalled();
     expect(getMemorySearchManagerMock).not.toHaveBeenCalled();
     expect(sync).not.toHaveBeenCalled();
@@ -735,7 +858,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       });
     });
     const result = await resultPromise;
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
   });
 
   it("registers the Ollama api provider before compaction", async () => {
@@ -770,7 +893,7 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       customInstructions: "focus on decisions",
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
   });
 });
 
@@ -803,7 +926,7 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
       }),
     );
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(result.compacted).toBe(true);
 
     expect(hookRunner.runBeforeCompaction).toHaveBeenCalledWith(
@@ -841,7 +964,7 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
         }),
       );
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.reason).toBe(true);
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledWith({ sessionFile: TEST_SESSION_FILE });
       expect(sync).toHaveBeenCalledWith({
@@ -889,7 +1012,7 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
         }),
       );
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.reason).toBe(true);
       expect(listener).not.toHaveBeenCalled();
       expect(sync).not.toHaveBeenCalled();
     } finally {
@@ -903,7 +1026,7 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
 
     const result = await compactEmbeddedPiSession(wrappedCompactionArgs());
 
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.reason).toBe(true);
     expect(result.compacted).toBe(true);
     expect(contextEngineCompactMock).toHaveBeenCalled();
   });

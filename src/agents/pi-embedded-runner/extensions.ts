@@ -1,6 +1,7 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ExtensionFactory, SessionManager } from "@mariozechner/pi-coding-agent";
 import type { OpenClawConfig } from "../../config/config.js";
+import { compactionModelReference } from "../compaction-model-config.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { setCompactionSafeguardRuntime } from "../pi-extensions/compaction-safeguard-runtime.js";
@@ -67,9 +68,18 @@ export function buildEmbeddedExtensionFactories(params: {
   provider: string;
   modelId: string;
   model: Model<Api> | undefined;
+  agentDir?: string;
+  authProfileId?: string;
+  compactionModelResolved?: boolean;
+  abortSignal?: AbortSignal;
+  compactionProvider?: string;
+  compactionAuthProfileId?: string;
 }): ExtensionFactory[] {
   const factories: ExtensionFactory[] = [];
-  if (resolveCompactionMode(params.cfg) === "safeguard") {
+  if (
+    resolveCompactionMode(params.cfg) === "safeguard" ||
+    compactionModelReference(params.cfg?.agents?.defaults?.compaction)
+  ) {
     const compactionCfg = params.cfg?.agents?.defaults?.compaction;
     const qualityGuardCfg = compactionCfg?.qualityGuard;
     const contextWindowInfo = resolveContextWindowInfo({
@@ -80,6 +90,8 @@ export function buildEmbeddedExtensionFactories(params: {
       defaultTokens: DEFAULT_CONTEXT_TOKENS,
     });
     setCompactionSafeguardRuntime(params.sessionManager, {
+      abortSignal: params.abortSignal,
+      conciseSummary: Boolean(compactionModelReference(compactionCfg)),
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
       identifierPolicy: compactionCfg?.identifierPolicy,
@@ -88,6 +100,22 @@ export function buildEmbeddedExtensionFactories(params: {
       qualityGuardEnabled: qualityGuardCfg?.enabled ?? false,
       qualityGuardMaxRetries: qualityGuardCfg?.maxRetries,
       model: params.model,
+      modelConcurrency: compactionCfg?.background?.maxConcurrent ?? 4,
+      resolveModel:
+        compactionModelReference(compactionCfg) &&
+        (!params.compactionModelResolved || compactionCfg?.models)
+          ? async () => {
+              const { resolveCompactionModel } = await import("../compaction-model.runtime.js");
+              return resolveCompactionModel({
+                cfg: params.cfg!,
+                provider: params.compactionProvider ?? params.provider,
+                agentDir: params.agentDir,
+                authProfileId: params.compactionProvider
+                  ? params.compactionAuthProfileId
+                  : params.authProfileId,
+              });
+            }
+          : undefined,
       recentTurnsPreserve: compactionCfg?.recentTurnsPreserve,
     });
     factories.push(compactionSafeguardExtension);

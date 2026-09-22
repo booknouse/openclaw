@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import { getBackgroundCompactionJob } from "../../agents/background-compaction-state.js";
+import { backgroundCompactionEnabled } from "../../agents/background-compaction.js";
 import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { resolveModelAuthMode } from "../../agents/model-auth.js";
 import { isCliProvider } from "../../agents/model-selection.js";
-import { queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
+import { isEmbeddedPiRunActive, queueEmbeddedPiMessage } from "../../agents/pi-embedded.js";
 import { hasNonzeroUsage } from "../../agents/usage.js";
 import {
   resolveAgentIdFromSessionKey,
@@ -13,6 +15,7 @@ import {
   type SessionEntry,
   updateSessionStore,
   updateSessionStoreEntry,
+  loadSessionStore,
 } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
@@ -48,6 +51,7 @@ import { appendUsageLine, formatResponseUsageLine } from "./agent-runner-utils.j
 import { createAudioAsVoiceBuffer, createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
 import { createFollowupRunner } from "./followup-runner.js";
+import { cancelIdleMemoryFlush, scheduleIdleMemoryFlush } from "./idle-memory-flush.js";
 import { resolveOriginMessageProvider, resolveOriginMessageTo } from "./origin-routing.js";
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
@@ -91,6 +95,17 @@ export async function runReplyAgent(params: {
   shouldInjectGroupIntro: boolean;
   typingMode: TypingMode;
 }): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  const cancelledMaintenance = await cancelIdleMemoryFlush(params.sessionKey ?? params.queueKey);
+  if (cancelledMaintenance && !isEmbeddedPiRunActive(params.followupRun.run.sessionId)) {
+    // Active/streaming hints may have referred to the cancelled internal memory turn.
+    params = {
+      ...params,
+      isActive: false,
+      isStreaming: false,
+      shouldSteer: false,
+      shouldFollowup: false,
+    };
+  }
   const {
     commandBody,
     followupRun,
@@ -224,7 +239,12 @@ export async function runReplyAgent(params: {
 
   await typingSignals.signalRunStart();
 
-  activeSessionEntry = await runMemoryFlushIfNeeded({
+  const deferMemoryFlush =
+    (cfg.agents?.defaults?.compaction?.memoryFlush?.background ??
+      backgroundCompactionEnabled(cfg)) &&
+    Boolean(sessionKey && storePath) &&
+    !isHeartbeat;
+  const memoryFlushParams = {
     cfg,
     followupRun,
     promptForEstimate: followupRun.prompt,
@@ -238,7 +258,10 @@ export async function runReplyAgent(params: {
     sessionKey,
     storePath,
     isHeartbeat,
-  });
+  };
+  if (!deferMemoryFlush) {
+    activeSessionEntry = await runMemoryFlushIfNeeded(memoryFlushParams);
+  }
 
   const runFollowupTurn = createFollowupRunner({
     opts,
@@ -700,6 +723,34 @@ export async function runReplyAgent(params: {
       finalPayloads = appendUsageLine(finalPayloads, responseUsageLine);
     }
 
+    if (deferMemoryFlush && sessionKey && storePath && !runResult.meta?.aborted) {
+      const memoryRun = { ...followupRun, run: { ...followupRun.run } };
+      scheduleIdleMemoryFlush({
+        key: sessionKey,
+        isolated: true,
+        ready: () =>
+          !isEmbeddedPiRunActive(memoryRun.run.sessionId) &&
+          getBackgroundCompactionJob(memoryRun.run.sessionFile)?.state !== "running",
+        run: async (signal) => {
+          const freshStore = loadSessionStore(storePath);
+          const freshEntry = freshStore[sessionKey];
+          if (!freshEntry || freshEntry.sessionId !== memoryRun.run.sessionId) {
+            return;
+          }
+          await runMemoryFlushIfNeeded({
+            ...memoryFlushParams,
+            followupRun: memoryRun,
+            isolated: true,
+            promptForEstimate: "",
+            sessionEntry: freshEntry,
+            sessionStore: freshStore,
+            opts: { abortSignal: signal },
+          });
+        },
+        onError: () =>
+          defaultRuntime.error("Deferred memory flush failed; preserving transcript for retry."),
+      });
+    }
     return finalizeWithFollowup(
       finalPayloads.length === 1 ? finalPayloads[0] : finalPayloads,
       queueKey,

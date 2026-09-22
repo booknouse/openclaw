@@ -76,6 +76,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     isGroup: params.isGroup,
   });
   const result = await compactEmbeddedPiSession({
+    abortSignal: params.abortSignal,
     sessionId,
     sessionKey: params.sessionKey,
     messageChannel: params.command.channel,

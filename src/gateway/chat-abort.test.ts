@@ -1,10 +1,76 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  claimBackgroundCompaction,
+  cancelBackgroundCompaction,
+  getBackgroundCompactionJob,
+  releaseBackgroundCompactionSlot,
+} from "../agents/background-compaction-state.js";
+import {
+  cancelIdleMemoryFlush,
+  scheduleIdleMemoryFlush,
+} from "../auto-reply/reply/idle-memory-flush.js";
+import {
   abortChatRunById,
+  abortChatRunsForSessionKey,
   isChatStopCommandText,
   type ChatAbortOps,
   type ChatAbortControllerEntry,
 } from "./chat-abort.js";
+
+it("chat abort cancels deferred maintenance even after the foreground run has finished", async () => {
+  vi.useFakeTimers();
+  const key = "maintenance-test";
+  const run = vi.fn();
+  try {
+    scheduleIdleMemoryFlush({ key, ready: () => true, run, onError: vi.fn() });
+    const ops = createOps({ runId: "finished", entry: createActiveEntry(key) });
+    ops.chatAbortControllers.clear();
+    expect(abortChatRunsForSessionKey(ops, { sessionKey: key })).toEqual({
+      aborted: true,
+      runIds: [],
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(run).not.toHaveBeenCalled();
+  } finally {
+    await cancelIdleMemoryFlush(key);
+    vi.useRealTimers();
+  }
+});
+
+it("chat stop cancels a background summary after its foreground response finished", () => {
+  const key = "agent:main:background-stop";
+  const file = "/tmp/background-stop-test.jsonl";
+  const controller = new AbortController();
+  expect(
+    claimBackgroundCompaction(
+      file,
+      {
+        state: "running",
+        sessionId: "session",
+        sessionKey: key,
+        touchedAt: Date.now(),
+        controller,
+        snapshotIds: [],
+        snapshotHash: "test",
+        preparation: { firstKeptEntryId: "kept", messagesToSummarize: [], tokensBefore: 10 },
+      },
+      4,
+    ),
+  ).toBe(true);
+  try {
+    const ops = createOps({ runId: "finished", entry: createActiveEntry(key) });
+    ops.chatAbortControllers.clear();
+    expect(abortChatRunsForSessionKey(ops, { sessionKey: key })).toEqual({
+      aborted: true,
+      runIds: [],
+    });
+    expect(controller.signal.aborted).toBe(true);
+    expect(getBackgroundCompactionJob(file)).toBeUndefined();
+  } finally {
+    cancelBackgroundCompaction(file);
+    releaseBackgroundCompactionSlot();
+  }
+});
 
 function createActiveEntry(sessionKey: string): ChatAbortControllerEntry {
   const now = Date.now();

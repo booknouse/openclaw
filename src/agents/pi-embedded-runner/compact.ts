@@ -32,9 +32,13 @@ import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { resolveSessionAgentId, resolveSessionAgentIds } from "../agent-scope.js";
+import { cancelBackgroundCompaction } from "../background-compaction-state.js";
+import { commitReadyBackgroundCompaction } from "../background-compaction.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
 import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
+import { compactionModelReference } from "../compaction-model-config.js";
+import { beginCompaction, endCompaction } from "../compaction-status.js";
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { ensureCustomApiRegistered } from "../custom-api-registry.js";
 import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
@@ -103,6 +107,7 @@ import { describeUnknownError, mapThinkingLevel } from "./utils.js";
 import { flushPendingToolResultsAfterIdle } from "./wait-for-idle-before-flush.js";
 
 export type CompactEmbeddedPiSessionParams = {
+  abortSignal?: AbortSignal;
   sessionId: string;
   runId?: string;
   sessionKey?: string;
@@ -370,6 +375,26 @@ async function runPostCompactionSideEffects(params: {
 export async function compactEmbeddedPiSessionDirect(
   params: CompactEmbeddedPiSessionParams,
 ): Promise<EmbeddedPiCompactResult> {
+  if (params.abortSignal?.aborted) {
+    return { ok: false, compacted: false, reason: "compaction_cancelled" };
+  }
+  const operation = beginCompaction(params.sessionId, params.sessionKey);
+  let outcome: "succeeded" | "failed" | "cancelled" = "failed";
+  try {
+    const result = await compactEmbeddedPiSessionDirectInner(params);
+    outcome = params.abortSignal?.aborted ? "cancelled" : result.ok ? "succeeded" : "failed";
+    return result;
+  } finally {
+    endCompaction(params.sessionId, operation, outcome);
+  }
+}
+
+async function compactEmbeddedPiSessionDirectInner(
+  params: CompactEmbeddedPiSessionParams,
+): Promise<EmbeddedPiCompactResult> {
+  if (params.abortSignal?.aborted) {
+    return { ok: false, compacted: false, reason: "compaction_cancelled" };
+  }
   const startedAt = Date.now();
   const diagId = params.diagId?.trim() || createCompactionDiagId();
   const trigger = params.trigger ?? "manual";
@@ -384,7 +409,9 @@ export async function compactEmbeddedPiSessionDirect(
   const prevCwd = process.cwd();
 
   // Resolve compaction model: prefer config override, then fall back to caller-supplied model
-  const compactionModelOverride = params.config?.agents?.defaults?.compaction?.model?.trim();
+  const compactionModelOverride = compactionModelReference(
+    params.config?.agents?.defaults?.compaction,
+  );
   let provider: string;
   let modelId: string;
   // When switching provider via override, drop the primary auth profile to avoid
@@ -711,6 +738,40 @@ export async function compactEmbeddedPiSessionDirect(
         allowedToolNames,
       });
       trackSessionManagerAccess(params.sessionFile);
+      params.abortSignal?.throwIfAborted();
+      if (
+        !params.customInstructions?.trim() &&
+        commitReadyBackgroundCompaction({
+          config: params.config,
+          sessionId: params.sessionId,
+          sessionFile: params.sessionFile,
+          sessionKey: params.sessionKey,
+          sessionManager,
+          tokenBudget: ctxInfo.tokens,
+          agentDir,
+          provider,
+          authProfileId,
+        })
+      ) {
+        const entry = sessionManager.getBranch().findLast((item) => item.type === "compaction");
+        if (entry?.type === "compaction") {
+          return {
+            ok: true,
+            compacted: true,
+            result: {
+              summary: entry.summary,
+              firstKeptEntryId: entry.firstKeptEntryId,
+              tokensBefore: entry.tokensBefore,
+              tokensAfter: sessionManager
+                .buildSessionContext()
+                .messages.reduce((total, message) => total + estimateTokens(message), 0),
+              details: entry.details,
+            },
+          };
+        }
+      }
+      // Foreground compaction owns this snapshot; the previous background job cannot commit later.
+      cancelBackgroundCompaction(params.sessionFile);
       const settingsManager = createPreparedEmbeddedPiSettingsManager({
         cwd: effectiveWorkspace,
         agentDir,
@@ -724,6 +785,12 @@ export async function compactEmbeddedPiSessionDirect(
         provider,
         modelId,
         model,
+        agentDir,
+        authProfileId: params.authProfileId,
+        compactionModelResolved: true,
+        abortSignal: params.abortSignal,
+        compactionProvider: params.provider ?? DEFAULT_PROVIDER,
+        compactionAuthProfileId: params.authProfileId,
       });
       // Only create an explicit resource loader when there are extension factories
       // to register; otherwise let createAgentSession use its built-in default.
@@ -771,7 +838,13 @@ export async function compactEmbeddedPiSessionDirect(
         );
       }
 
+      const onCompactionAbort = () => {
+        runAbortController.abort(params.abortSignal?.reason);
+        session.abortCompaction?.();
+      };
+      params.abortSignal?.addEventListener("abort", onCompactionAbort, { once: true });
       try {
+        params.abortSignal?.throwIfAborted();
         const prior = await sanitizeSessionHistory({
           messages: session.messages,
           modelApi: model.api,
@@ -915,9 +988,11 @@ export async function compactEmbeddedPiSessionDirect(
           // If token estimation throws on a malformed message, fall back to 0 so
           // the sanity check below becomes a no-op instead of crashing compaction.
         }
+        params.abortSignal?.throwIfAborted();
         const result = await compactWithSafetyTimeout(() =>
           session.compact(params.customInstructions),
         );
+        params.abortSignal?.throwIfAborted();
         await runPostCompactionSideEffects({
           config: params.config,
           sessionKey: params.sessionKey,
@@ -1018,6 +1093,7 @@ export async function compactEmbeddedPiSessionDirect(
           },
         };
       } finally {
+        params.abortSignal?.removeEventListener("abort", onCompactionAbort);
         await flushPendingToolResultsAfterIdle({
           agent: session?.agent,
           sessionManager,
@@ -1051,6 +1127,9 @@ export async function compactEmbeddedPiSession(
     params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
   return enqueueCommandInLane(sessionLane, () =>
     enqueueGlobal(async () => {
+      if (params.abortSignal?.aborted) {
+        return { ok: false, compacted: false, reason: "compaction_cancelled" };
+      }
       ensureRuntimePluginsLoaded({
         config: params.config,
         workspaceDir: params.workspaceDir,

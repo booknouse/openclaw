@@ -1,11 +1,16 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { beginCompaction, endCompaction } from "./compaction-status.js";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { makeZeroUsageSnapshot } from "./usage.js";
 
 export function handleAutoCompactionStart(ctx: EmbeddedPiSubscribeContext) {
   ctx.state.compactionInFlight = true;
+  const statusSessionId = ctx.params.session.sessionId ?? ctx.params.sessionId;
+  if (statusSessionId) {
+    beginCompaction(statusSessionId, ctx.params.sessionKey, `auto:${ctx.params.runId}`);
+  }
   ctx.ensureCompactionPromise();
   ctx.log.debug(`embedded run compaction start: runId=${ctx.params.runId}`);
   emitAgentEvent({
@@ -50,6 +55,14 @@ export function handleAutoCompactionEnd(
   // and context was trimmed — the counter must reflect that.  (#38905)
   const hasResult = evt.result != null;
   const wasAborted = Boolean(evt.aborted);
+  const statusSessionId = ctx.params.session.sessionId ?? ctx.params.sessionId;
+  if (statusSessionId) {
+    endCompaction(
+      statusSessionId,
+      `auto:${ctx.params.runId}`,
+      wasAborted ? "cancelled" : hasResult ? "succeeded" : "failed",
+    );
+  }
   if (hasResult && !wasAborted) {
     ctx.incrementCompactionCount?.();
   }
@@ -64,11 +77,19 @@ export function handleAutoCompactionEnd(
   emitAgentEvent({
     runId: ctx.params.runId,
     stream: "compaction",
-    data: { phase: "end", willRetry },
+    data: {
+      phase: "end",
+      willRetry,
+      outcome: wasAborted ? "cancelled" : hasResult ? "succeeded" : "failed",
+    },
   });
   void ctx.params.onAgentEvent?.({
     stream: "compaction",
-    data: { phase: "end", willRetry },
+    data: {
+      phase: "end",
+      willRetry,
+      outcome: wasAborted ? "cancelled" : hasResult ? "succeeded" : "failed",
+    },
   });
 
   // Run after_compaction plugin hook (fire-and-forget)

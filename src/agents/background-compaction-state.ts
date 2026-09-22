@@ -17,12 +17,14 @@ export type BackgroundCompactionStatus = {
 
 export type BackgroundCompactionJob = BackgroundCompactionStatus & {
   sessionId: string;
+  sessionKey?: string;
   touchedAt: number;
   controller: AbortController;
   snapshotIds: string[];
   snapshotHash: string;
   preparation: BackgroundCompactionPreparation;
   summary?: string;
+  model?: string;
   protectedContext?: string;
   timer?: ReturnType<typeof setTimeout>;
 };
@@ -82,7 +84,10 @@ export function claimBackgroundCompaction(
       cancelBackgroundCompaction(key);
     }
   }
-  if (state.active >= maxConcurrent || (!state.jobs.has(file) && state.jobs.size >= MAX_JOBS)) {
+  if (
+    state.active >= maxConcurrent ||
+    (!state.jobs.has(file) && state.jobs.size >= Math.max(MAX_JOBS, maxConcurrent))
+  ) {
     return false;
   }
   state.jobs.set(file, job);
@@ -92,4 +97,15 @@ export function claimBackgroundCompaction(
 
 export function releaseBackgroundCompactionSlot(): void {
   state.active = Math.max(0, state.active - 1);
+}
+
+export function cancelBackgroundCompactionForKey(key: string): boolean {
+  let cancelled = false;
+  for (const [file, job] of state.jobs) {
+    if (job.sessionKey === key) {
+      cancelBackgroundCompaction(file);
+      cancelled = true;
+    }
+  }
+  return cancelled;
 }

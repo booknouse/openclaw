@@ -30,6 +30,7 @@ import {
   buildEmbeddedRunExecutionParams,
   resolveModelFallbackOptions,
 } from "./agent-runner-utils.js";
+import { createMemoryFlushSnapshot } from "./memory-flush-snapshot.js";
 import {
   hasAlreadyFlushedForCurrentCompaction,
   resolveMemoryFlushContextWindowTokens,
@@ -248,6 +249,7 @@ export async function readPromptTokensFromSessionLog(
 }
 
 export async function runMemoryFlushIfNeeded(params: {
+  isolated?: boolean;
   cfg: OpenClawConfig;
   followupRun: FollowupRun;
   promptForEstimate?: string;
@@ -262,6 +264,9 @@ export async function runMemoryFlushIfNeeded(params: {
   storePath?: string;
   isHeartbeat: boolean;
 }): Promise<SessionEntry | undefined> {
+  if (params.opts?.abortSignal?.aborted) {
+    return params.sessionEntry;
+  }
   const memoryFlushSettings = resolveMemoryFlushSettings(params.cfg);
   if (!memoryFlushSettings) {
     return params.sessionEntry;
@@ -359,6 +364,8 @@ export async function runMemoryFlushIfNeeded(params: {
     Number.isFinite(transcriptPromptTokens) &&
     transcriptPromptTokens > 0;
   const shouldPersistTranscriptPromptTokens =
+    !params.isolated &&
+    !params.opts?.abortSignal?.aborted &&
     hasReliableTranscriptPromptTokens &&
     (!hasFreshPersistedPromptTokens ||
       (transcriptPromptTokens ?? 0) > (persistedPromptTokens ?? 0));
@@ -447,6 +454,19 @@ export async function runMemoryFlushIfNeeded(params: {
     return entry ?? params.sessionEntry;
   }
 
+  if (params.isolated && params.sessionKey) {
+    const snapshot = await createMemoryFlushSnapshot({
+      config: params.cfg,
+      sessionFile: params.followupRun.run.sessionFile,
+      sessionKey: params.sessionKey,
+      signal: params.opts?.abortSignal ?? new AbortController().signal,
+    });
+    params = {
+      ...params,
+      followupRun: { ...params.followupRun, run: { ...params.followupRun.run, ...snapshot } },
+    };
+  }
+
   logVerbose(
     `memoryFlush triggered: sessionKey=${params.sessionKey} tokenCount=${tokenCountForFlush ?? "undefined"} threshold=${flushThreshold}`,
   );
@@ -460,7 +480,7 @@ export async function runMemoryFlushIfNeeded(params: {
   const flushRunId = crypto.randomUUID();
   if (params.sessionKey) {
     registerAgentRunContext(flushRunId, {
-      sessionKey: params.sessionKey,
+      sessionKey: params.followupRun.run.sessionKey ?? params.sessionKey,
       verboseLevel: params.resolvedVerboseLevel,
     });
   }
@@ -481,6 +501,7 @@ export async function runMemoryFlushIfNeeded(params: {
       ...resolveModelFallbackOptions(params.followupRun.run),
       runId: flushRunId,
       run: async (provider, model, runOptions) => {
+        params.opts?.abortSignal?.throwIfAborted();
         const { embeddedContext, senderContext, runBaseParams } = buildEmbeddedRunExecutionParams({
           run: params.followupRun.run,
           sessionCtx: params.sessionCtx,
@@ -495,6 +516,9 @@ export async function runMemoryFlushIfNeeded(params: {
           ...senderContext,
           ...runBaseParams,
           trigger: "memory",
+          lane: params.isolated ? "memory-maintenance" : undefined,
+          abortSignal: params.opts?.abortSignal,
+          timeoutMs: Math.min(runBaseParams.timeoutMs, 30_000),
           memoryFlushWritePath,
           prompt: resolveMemoryFlushPromptForRun({
             prompt: memoryFlushSettings.prompt,
@@ -514,6 +538,12 @@ export async function runMemoryFlushIfNeeded(params: {
             }
           },
         });
+        if (params.opts?.abortSignal?.aborted || result.meta?.aborted) {
+          throw new DOMException("Memory maintenance cancelled", "AbortError");
+        }
+        if (result.meta?.error || result.payloads?.some((payload) => payload.isError)) {
+          throw new Error("Memory maintenance failed; preserving transcript for retry");
+        }
         bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
           result.meta?.systemPromptReport,
         );
@@ -540,10 +570,16 @@ export async function runMemoryFlushIfNeeded(params: {
         const updatedEntry = await updateSessionStoreEntry({
           storePath: params.storePath,
           sessionKey: params.sessionKey,
-          update: async () => ({
-            memoryFlushAt: Date.now(),
-            memoryFlushCompactionCount,
-          }),
+          update: async (current) => {
+            if (
+              params.opts?.abortSignal?.aborted ||
+              current.sessionId !== activeSessionEntry?.sessionId ||
+              (current.compactionCount ?? 0) !== memoryFlushCompactionCount
+            ) {
+              return null;
+            }
+            return { memoryFlushAt: Date.now(), memoryFlushCompactionCount };
+          },
         });
         if (updatedEntry) {
           activeSessionEntry = updatedEntry;

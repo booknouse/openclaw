@@ -296,7 +296,19 @@ export type AgentCompactionQualityGuardConfig = {
   maxRetries?: number;
 };
 
+export type AgentCompactionModelPool = {
+  /** Provider/model used by this pool. */
+  model: string;
+  /** Maximum model requests per gateway process; default 4 for primary, 10 for secondary. */
+  maxConcurrent?: number;
+};
+
 export type AgentCompactionConfig = {
+  /** Ordered model pools shared by synchronous and background compaction. Overrides model. */
+  models?: {
+    primary: AgentCompactionModelPool;
+    secondary?: AgentCompactionModelPool;
+  };
   /** Opt-in proactive summarization. Native compaction remains the hard-limit fallback. */
   background?: {
     enabled?: boolean;
@@ -344,6 +356,8 @@ export type AgentCompactionConfig = {
 };
 
 export type AgentCompactionMemoryFlushConfig = {
+  /** Isolate maintenance after replies, independently of background compaction. Defaults to the background compaction setting. */
+  background?: boolean;
   /** Enable the pre-compaction memory flush (default: true). */
   enabled?: boolean;
   /** Run the memory flush when context is within this many tokens of the compaction threshold. */

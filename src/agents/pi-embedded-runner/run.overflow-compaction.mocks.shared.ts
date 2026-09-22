@@ -159,6 +159,7 @@ vi.mock("./model.js", () => ({
 }));
 
 vi.mock("../model-auth.js", () => ({
+  applyLocalNoAuthHeaderOverride: (model: unknown) => model,
   ensureAuthProfileStore: vi.fn(() => ({})),
   getApiKeyForModel: vi.fn(async () => ({
     apiKey: "test-key",

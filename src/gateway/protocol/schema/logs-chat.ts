@@ -33,6 +33,7 @@ export const ChatHistoryParamsSchema = Type.Object(
 
 export const ChatSendParamsSchema = Type.Object(
   {
+    rejectIfCompacting: Type.Optional(Type.Boolean()),
     sessionKey: ChatSendSessionKeyString,
     message: Type.String(),
     thinking: Type.Optional(Type.String()),

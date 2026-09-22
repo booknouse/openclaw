@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { getCompactionStatus } from "../../agents/compaction-status.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
@@ -1078,6 +1079,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       return;
     }
     const p = params as {
+      rejectIfCompacting?: boolean;
       sessionKey: string;
       message: string;
       thinking?: string;
@@ -1204,6 +1206,20 @@ export const chatHandlers: GatewayRequestHandlers = {
         runId: clientRunId,
       });
       return;
+    }
+
+    if (p.rejectIfCompacting && entry?.sessionId) {
+      const compaction = getCompactionStatus(entry.sessionId);
+      if (compaction.blocking) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "SESSION_COMPACTING", {
+            details: { code: "SESSION_COMPACTING", compaction },
+          }),
+        );
+        return;
+      }
     }
 
     try {

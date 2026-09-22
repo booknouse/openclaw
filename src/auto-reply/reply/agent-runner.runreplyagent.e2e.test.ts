@@ -8,6 +8,7 @@ import type { TypingMode } from "../../config/types.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import type { TemplateContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
+import { cancelIdleMemoryFlush } from "./idle-memory-flush.js";
 import {
   enqueueFollowupRun,
   scheduleFollowupDrain,
@@ -71,6 +72,7 @@ vi.mock("../../agents/model-fallback.js", () => ({
 }));
 
 vi.mock("../../agents/pi-embedded.js", () => ({
+  isEmbeddedPiRunActive: vi.fn().mockReturnValue(false),
   queueEmbeddedPiMessage: vi.fn().mockReturnValue(false),
   runEmbeddedPiAgent: (params: unknown) => state.runEmbeddedPiAgentMock(params),
 }));
@@ -1631,6 +1633,105 @@ describe("runReplyAgent memory flush", () => {
       expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
     });
   });
+
+  it.each([true, false])(
+    "isolates memory maintenance independently of background compaction (%s)",
+    async (backgroundCompaction) => {
+      await withTempStore(async (storePath) => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const sessionKey = "main";
+        const sessionEntry = {
+          sessionId: "session",
+          updatedAt: Date.now(),
+          totalTokens: 80000,
+          compactionCount: 1,
+        };
+        const sessionFile = path.join(path.dirname(storePath), "session.jsonl");
+        await fs.writeFile(
+          sessionFile,
+          JSON.stringify({ type: "session", id: "session", version: 3 }) + "\n",
+        );
+        await seedSessionStore({ storePath, sessionKey, entry: sessionEntry });
+        let maintenanceSignal: AbortSignal | undefined;
+        let finishMaintenance!: () => void;
+        state.runEmbeddedPiAgentMock.mockImplementation(
+          async (
+            params: EmbeddedRunParams & {
+              trigger?: string;
+              abortSignal?: AbortSignal;
+              sessionId?: string;
+              sessionFile?: string;
+              sessionKey?: string;
+              lane?: string;
+            },
+          ) => {
+            if (params.trigger === "memory") {
+              maintenanceSignal = params.abortSignal;
+              expect(params.lane).toBe("memory-maintenance");
+              expect(params.sessionKey).not.toBe(sessionKey);
+              expect(params.sessionId).not.toBe("session");
+              expect(params.sessionFile).not.toBe(sessionFile);
+              await new Promise<void>((resolve) => {
+                finishMaintenance = resolve;
+              });
+              return { payloads: [], meta: { aborted: true } };
+            }
+            return {
+              payloads: [{ text: "user answer" }],
+              meta: { agentMeta: { usage: { input: 1, output: 1 } } },
+            };
+          },
+        );
+        const baseRun = createBaseRun({
+          storePath,
+          sessionEntry,
+          runOverrides: { sessionFile },
+          config: {
+            session: { archive: { directory: path.join(path.dirname(storePath), "archives") } },
+            agents: {
+              defaults: {
+                compaction: {
+                  model: "test/summary",
+                  background: { enabled: backgroundCompaction },
+                  memoryFlush: { background: true, forceFlushTranscriptBytes: 1 },
+                },
+              },
+            },
+          },
+        });
+        try {
+          await runReplyAgentWithBase({
+            baseRun,
+            storePath,
+            sessionKey,
+            sessionEntry,
+            commandBody: "hello",
+          });
+          expect(state.runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+          expect(maintenanceSignal).toBeUndefined();
+          await vi.advanceTimersByTimeAsync(2000);
+          await vi.waitFor(() => expect(maintenanceSignal).toBeDefined());
+          expect(maintenanceSignal?.aborted).toBe(false);
+          await runReplyAgentWithBase({
+            baseRun,
+            storePath,
+            sessionKey,
+            sessionEntry,
+            commandBody: "hello",
+          });
+          expect(maintenanceSignal?.aborted).toBe(true);
+          expect(state.runEmbeddedPiAgentMock).toHaveBeenCalledTimes(3);
+          const stored = sessions.loadSessionStore(storePath, { skipCache: true });
+          expect(stored[sessionKey].memoryFlushAt).toBeUndefined();
+        } finally {
+          finishMaintenance?.();
+          await vi.advanceTimersByTimeAsync(1);
+          await cancelIdleMemoryFlush(sessionKey);
+          vi.useRealTimers();
+        }
+      });
+    },
+  );
 
   it("uses configured prompts for memory flush runs", async () => {
     await withTempStore(async (storePath) => {

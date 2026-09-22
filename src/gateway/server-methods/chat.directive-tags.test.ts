@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { beginCompaction, endCompaction } from "../../agents/compaction-status.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { GATEWAY_CLIENT_CAPS, GATEWAY_CLIENT_MODES } from "../protocol/client-info.js";
 import { ErrorCodes } from "../protocol/index.js";
@@ -1009,4 +1010,31 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(mockState.lastDispatchCtx?.RawBody).toBe("bench update");
     expect(mockState.lastDispatchCtx?.CommandBody).toBe("bench update");
   });
+});
+
+it("rejects opt-in sends during this session's compaction before acknowledging", async () => {
+  createTranscriptFixture("chat-compaction-admission-");
+  const context = createChatContext();
+  const respond = vi.fn();
+  const op = beginCompaction(mockState.sessionId, "main");
+  try {
+    await chatHandlers["chat.send"]({
+      params: {
+        sessionKey: "main",
+        message: "next",
+        idempotencyKey: "blocked",
+        rejectIfCompacting: true,
+      },
+      respond,
+      req: {} as never,
+      client: null,
+      isWebchatConnect: () => false,
+      context: context as GatewayRequestContext,
+    });
+    expect(respond.mock.calls[0][0]).toBe(false);
+    expect(respond.mock.calls[0][2].message).toBe("SESSION_COMPACTING");
+    expect(context.chatAbortControllers.size).toBe(0);
+  } finally {
+    endCompaction(mockState.sessionId, op, "succeeded");
+  }
 });

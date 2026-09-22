@@ -82,16 +82,17 @@ describe("background compaction native transcript lifecycle", () => {
 
   it("returns while the provider is pending, preserves concurrent turns, and reloads native compaction", async () => {
     let finish!: (value: string) => void;
-    summarize.mockImplementation(
-      () =>
-        new Promise<string>((resolve) => {
-          finish = resolve;
-        }),
-    );
+    summarize.mockImplementation((request: { onModelSelected?: (model: string) => void }) => {
+      request.onModelSelected?.("secondary/summary");
+      return new Promise<string>((resolve) => {
+        finish = resolve;
+      });
+    });
     expect(scheduleBackgroundCompaction(params)).toBe(true);
     await vi.waitFor(() => expect(summarize).toHaveBeenCalledOnce());
     expect(scheduleBackgroundCompaction(params)).toBe(false);
     append("new fact BG-TAIL-7391; window cancelled");
+    append("latest correction: must retain BG-CORRECTION-7392 verbatim");
     expect(manager.getBranch().filter((e) => e.type === "compaction")).toHaveLength(0);
     finish(summary);
     await vi.waitFor(() =>
@@ -102,10 +103,14 @@ describe("background compaction native transcript lifecycle", () => {
     expect(reloaded.getSessionId()).toBe(params.sessionId);
     const text = JSON.stringify(reloaded.buildSessionContext().messages);
     expect(text).toContain("BG-TAIL-7391");
+    expect(text).toContain("latest correction: must retain BG-CORRECTION-7392 verbatim");
     expect(text).toContain("生产只读");
     expect(text).not.toContain("history 0");
     expect(text.length).toBeLessThan(30_000);
     expect(reloaded.getBranch().filter((e) => e.type === "compaction")).toHaveLength(1);
+    expect(reloaded.getBranch().find((e) => e.type === "compaction")).toMatchObject({
+      details: { model: "secondary/summary" },
+    });
   });
 
   it("summarizes previous compaction plus retained/new messages on the second cycle", async () => {
@@ -223,4 +228,124 @@ it("does not silently discard oversized protected constraints", () => {
   expect(() =>
     collectProtectedContext([{ role: "user", content: "必须" + "x".repeat(25000), timestamp: 0 }]),
   ).toThrow("protected_context_too_large");
+});
+
+it("does not let stale imported usage undercut current history size", () => {
+  const history = [
+    { role: "user" as const, content: "imported history ".repeat(10000), timestamp: 0 },
+    {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "old answer" }],
+      api: "openai-completions" as const,
+      provider: "test",
+      model: "test",
+      stopReason: "stop" as const,
+      timestamp: 1,
+      usage: {
+        input: 10,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 11,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  ];
+  expect(estimateBackgroundContextTokens(history)).toBeGreaterThan(10000);
+});
+
+it("keeps exact identifiers without accumulating the surrounding assistant prose", () => {
+  const messages = Array.from({ length: 120 }, (_, i) => ({
+    role: "assistant" as const,
+    content: [
+      {
+        type: "text" as const,
+        text: `Long explanation ${"details ".repeat(100)} /opt/work/flow.py TASK-42 variant ${i}`,
+      },
+    ],
+    api: "openai-completions" as const,
+    provider: "test",
+    model: "test",
+    stopReason: "stop" as const,
+    timestamp: i,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  }));
+  const result = collectProtectedContext(messages);
+  expect(result).toContain("/opt/work/flow.py");
+  expect(result).toContain("TASK-42");
+  expect(result).not.toContain("Long explanation");
+  expect(result.length).toBeLessThan(200);
+});
+
+it("migrates previous protected prose and retains old and new user constraints verbatim", () => {
+  const old =
+    "summary\n<protected-context>\n必须只读操作，保留所有原始数据。\n" +
+    Array.from(
+      { length: 120 },
+      (_, i) => `Explanation ${i} ${"details ".repeat(100)} /opt/work/flow.py`,
+    ).join("\n") +
+    "\n</protected-context>";
+  const result = collectProtectedContext(
+    [{ role: "user", content: "不要修改生产环境。", timestamp: 0 }],
+    old,
+  );
+  expect(result).toContain("必须只读操作，保留所有原始数据。");
+  expect(result).toContain("不要修改生产环境。");
+  expect(result).toContain("/opt/work/flow.py");
+  expect(result.length).toBeLessThan(300);
+});
+
+it("does not hit the protection limit by repeating paths already kept in constraints", () => {
+  const constraints = Array.from(
+    { length: 100 },
+    (_, i) => `必须保留 /workspace/${"component".repeat(12)}/${i}/analysis.py`,
+  );
+  const text = collectProtectedContext([
+    { role: "user", content: constraints.join("\n"), timestamp: 0 },
+  ]);
+  expect(text.length).toBeLessThan(24000);
+  for (const line of constraints) {
+    expect(text).toContain(line);
+  }
+  expect(collectProtectedContext([], text)).toBe(text);
+});
+
+it("preserves path spelling once without collapsing distinct opaque identifiers", () => {
+  const text = collectProtectedContext([
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "/workspace/project /workspace/project/check.py check.py abcdef123456 abcdef1234567890",
+        },
+      ],
+      timestamp: 0,
+      api: "openai-completions",
+      provider: "test",
+      model: "test",
+      stopReason: "stop",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  ]);
+  expect(text.split("\n")).toContain("/workspace/project/check.py");
+  expect(text.split("\n")).not.toContain("/workspace/project");
+  expect(text.split("\n")).not.toContain("check.py");
+  expect(text.split("\n")).toContain("abcdef123456");
+  expect(text.split("\n")).toContain("abcdef1234567890");
+  expect(collectProtectedContext([], text)).toBe(text);
 });

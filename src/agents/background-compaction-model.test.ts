@@ -75,3 +75,24 @@ it("rejects a response that did not follow the summary schema", async () => {
     "background_compaction_invalid_format",
   );
 });
+
+it("keeps complete summaries above the soft target and uses one provider request", async () => {
+  const text =
+    "## Decisions\n" +
+    "important fact ".repeat(2000) +
+    "\n## Open TODOs\nb\n## Constraints/Rules\nc\n## Pending user asks\nd\n## Exact identifiers\ne";
+  f.complete.mockResolvedValue({ stopReason: "stop", content: [{ type: "text", text }] });
+  await expect(summarizeBackgroundContext(params)).resolves.toBe(text);
+  expect(f.complete).toHaveBeenCalledOnce();
+});
+
+it("respects a smaller model output limit without enabling reasoning or tools", async () => {
+  f.resolve.mockReturnValue({
+    model: { id: "small", provider: "summary", api: "openai-completions", maxTokens: 512 },
+  });
+  await summarizeBackgroundContext(params);
+  expect(f.complete.mock.calls[0][2].maxTokens).toBe(512);
+  expect(f.complete.mock.calls[0][1].systemPrompt).toContain("384 output tokens");
+  expect(f.complete.mock.calls[0][0].reasoning).toBe(false);
+  expect(f.complete.mock.calls[0][1]).not.toHaveProperty("tools");
+});

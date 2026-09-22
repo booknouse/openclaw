@@ -86,6 +86,24 @@ export const AgentDefaultsSchema = z
       .optional(),
     compaction: z
       .object({
+        models: z
+          .object({
+            primary: z
+              .object({
+                model: z.string().trim().min(1),
+                maxConcurrent: z.number().int().min(1).max(128).optional(),
+              })
+              .strict(),
+            secondary: z
+              .object({
+                model: z.string().trim().min(1),
+                maxConcurrent: z.number().int().min(1).max(128).optional(),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
         background: z
           .object({
             enabled: z.boolean().optional(),
@@ -121,6 +139,7 @@ export const AgentDefaultsSchema = z
         model: z.string().optional(),
         memoryFlush: z
           .object({
+            background: z.boolean().optional(),
             enabled: z.boolean().optional(),
             softThresholdTokens: z.number().int().nonnegative().optional(),
             forceFlushTranscriptBytes: z
@@ -139,7 +158,17 @@ export const AgentDefaultsSchema = z
       })
       .strict()
       .superRefine((value, ctx) => {
-        if (value.background?.enabled && !value.model?.trim()) {
+        if (
+          value.models?.secondary &&
+          value.models.primary.model === value.models.secondary.model
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["models", "secondary", "model"],
+            message: "Compaction model pools must use different models",
+          });
+        }
+        if (value.background?.enabled && !value.models?.primary.model && !value.model?.trim()) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["model"],

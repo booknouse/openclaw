@@ -1,11 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ExtensionAPI, FileOperations } from "@mariozechner/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  SessionBeforeCompactEvent,
+  FileOperations,
+} from "@mariozechner/pi-coding-agent";
 import { extractSections } from "../../auto-reply/reply/post-compaction-context.js";
 import { openBoundaryFile } from "../../infra/boundary-file-read.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { extractKeywords, isQueryStopWordToken } from "../../memory/query-expansion.js";
+import { collectProtectedContext } from "../background-compaction.js";
+import { withCompactionDeadline } from "../compaction-budget.js";
+import { compactionSummaryFits } from "../compaction-summary.js";
 import {
   BASE_CHUNK_RATIO,
   type CompactionSummarizationInstructions,
@@ -20,6 +28,7 @@ import {
   summarizeInStages,
 } from "../compaction.js";
 import { collectTextContentBlocks } from "../content-blocks.js";
+import { recordNativeCompactionResult } from "../native-compaction-state.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
 import { extractToolCallsFromAssistant, extractToolResultId } from "../tool-call-id.js";
@@ -700,7 +709,7 @@ async function readWorkspaceContextForSummary(): Promise<string> {
 }
 
 export default function compactionSafeguardExtension(api: ExtensionAPI): void {
-  api.on("session_before_compact", async (event, ctx) => {
+  const compact = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext) => {
     const { preparation, customInstructions: eventInstructions, signal } = event;
     if (!preparation.messagesToSummarize.some(isRealConversationMessage)) {
       log.warn(
@@ -728,7 +737,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       identifierInstructions: runtime?.identifierInstructions,
     };
     const identifierPolicy = runtime?.identifierPolicy ?? "strict";
-    const model = ctx.model ?? runtime?.model;
+    const override = await runtime?.resolveModel?.();
+    signal.throwIfAborted();
+    const model = override?.model ?? ctx.model ?? runtime?.model;
     if (!model) {
       // Log warning once per session when both models are missing (diagnostic for future issues).
       // Use a WeakSet to track which session managers have already logged the warning.
@@ -743,7 +754,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       return { cancel: true };
     }
 
-    const apiKey = await ctx.modelRegistry.getApiKey(model);
+    const apiKey = override?.apiKey ?? (await ctx.modelRegistry.getApiKey(model));
     if (!apiKey) {
       log.warn(
         "Compaction safeguard: no API key available; cancelling compaction to preserve history.",
@@ -752,9 +763,22 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     }
 
     try {
-      const modelContextWindow = resolveContextWindowTokens(model);
-      const contextWindowTokens = runtime?.contextWindowTokens ?? modelContextWindow;
+      const modelContextWindow = Math.min(
+        resolveContextWindowTokens(model),
+        override?.contextWindow ?? Infinity,
+      );
+      const contextWindowTokens = Math.min(
+        runtime?.contextWindowTokens ?? modelContextWindow,
+        modelContextWindow,
+      );
       const turnPrefixMessages = preparation.turnPrefixMessages ?? [];
+      const protectedContext =
+        runtime?.conciseSummary && identifierPolicy === "strict"
+          ? collectProtectedContext(
+              [...preparation.messagesToSummarize, ...turnPrefixMessages],
+              preparation.previousSummary,
+            )
+          : "";
       let messagesToSummarize = preparation.messagesToSummarize;
       const recentTurnsPreserve = resolveRecentTurnsPreserve(runtime?.recentTurnsPreserve);
       const qualityGuardEnabled = runtime?.qualityGuardEnabled ?? false;
@@ -812,6 +836,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                 droppedSummary = await summarizeInStages({
                   messages: pruned.droppedMessagesList,
                   model,
+                  modelConcurrency: runtime?.modelConcurrency,
+                  runSummary: override?.runSummary,
+                  concise: runtime?.conciseSummary,
                   apiKey,
                   signal,
                   reserveTokens: Math.max(1, Math.floor(preparation.settings.reserveTokens)),
@@ -874,11 +901,29 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         let summaryWithoutPreservedTurns = "";
         let summaryWithPreservedTurns = "";
         try {
+          const combinedTurn =
+            runtime?.conciseSummary &&
+            preparation.isSplitTurn &&
+            turnPrefixMessages.length > 0 &&
+            compactionSummaryFits(
+              {
+                messages: [...messagesToSummarize, ...turnPrefixMessages],
+                previousSummary: effectivePreviousSummary,
+                customInstructions: currentInstructions,
+              },
+              contextWindowTokens,
+            );
+          const summaryMessages = combinedTurn
+            ? [...messagesToSummarize, ...turnPrefixMessages]
+            : messagesToSummarize;
           const historySummary =
-            messagesToSummarize.length > 0
+            summaryMessages.length > 0
               ? await summarizeInStages({
-                  messages: messagesToSummarize,
+                  messages: summaryMessages,
                   model,
+                  modelConcurrency: runtime?.modelConcurrency,
+                  runSummary: override?.runSummary,
+                  concise: runtime?.conciseSummary,
                   apiKey,
                   signal,
                   reserveTokens,
@@ -891,10 +936,13 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               : buildStructuredFallbackSummary(effectivePreviousSummary, summarizationInstructions);
 
           summaryWithoutPreservedTurns = historySummary;
-          if (preparation.isSplitTurn && turnPrefixMessages.length > 0) {
+          if (preparation.isSplitTurn && turnPrefixMessages.length > 0 && !combinedTurn) {
             const prefixSummary = await summarizeInStages({
               messages: turnPrefixMessages,
               model,
+              modelConcurrency: runtime?.modelConcurrency,
+              runSummary: override?.runSummary,
+              concise: runtime?.conciseSummary,
               apiKey,
               signal,
               reserveTokens,
@@ -962,6 +1010,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           : `${structuredInstructions}\n\n${qualityFeedbackInstruction}`;
       }
 
+      summary = appendSummarySection(summary, protectedContext);
       summary = appendSummarySection(summary, toolFailureSection);
       summary = appendSummarySection(summary, fileOpsSummary);
 
@@ -985,6 +1034,27 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           error instanceof Error ? error.message : String(error)
         }`,
       );
+      return { cancel: true };
+    }
+  };
+  api.on("session_before_compact", async (event, ctx) => {
+    const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
+    const callerSignal = runtime?.abortSignal;
+    const file = ctx.sessionManager.getSessionFile?.();
+    try {
+      const parent = callerSignal ? AbortSignal.any([event.signal, callerSignal]) : event.signal;
+      const result = await withCompactionDeadline(parent, (signal) =>
+        compact({ ...event, signal }, ctx),
+      );
+      if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
+        recordNativeCompactionResult(file, "compaction" in result);
+      }
+      return result;
+    } catch {
+      if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
+        recordNativeCompactionResult(file, false);
+      }
+      log.warn("Compaction cancelled: deadline, abort, or configured model unavailable.");
       return { cancel: true };
     }
   });

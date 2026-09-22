@@ -1,4 +1,6 @@
+import { cancelBackgroundCompactionForKey } from "../agents/background-compaction-state.js";
 import { isAbortRequestText } from "../auto-reply/reply/abort.js";
+import { abortIdleMemoryFlush } from "../auto-reply/reply/idle-memory-flush.js";
 
 export type ChatAbortControllerEntry = {
   controller: AbortController;
@@ -93,6 +95,8 @@ export function abortChatRunById(
   const partialText = bufferedText && bufferedText.trim() ? bufferedText : undefined;
   ops.chatAbortedRuns.set(runId, Date.now());
   active.controller.abort();
+  abortIdleMemoryFlush(sessionKey);
+  cancelBackgroundCompactionForKey(sessionKey);
   ops.chatAbortControllers.delete(runId);
   ops.chatRunBuffers.delete(runId);
   ops.chatDeltaSentAt.delete(runId);
@@ -113,6 +117,8 @@ export function abortChatRunsForSessionKey(
   },
 ): { aborted: boolean; runIds: string[] } {
   const { sessionKey, stopReason } = params;
+  const maintenanceAborted = abortIdleMemoryFlush(sessionKey);
+  const backgroundAborted = cancelBackgroundCompactionForKey(sessionKey);
   const runIds: string[] = [];
   for (const [runId, active] of ops.chatAbortControllers) {
     if (active.sessionKey !== sessionKey) {
@@ -123,5 +129,5 @@ export function abortChatRunsForSessionKey(
       runIds.push(runId);
     }
   }
-  return { aborted: runIds.length > 0, runIds };
+  return { aborted: runIds.length > 0 || maintenanceAborted || backgroundAborted, runIds };
 }
