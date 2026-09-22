@@ -65,6 +65,7 @@ import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
 import { resolveSandboxContext } from "../sandbox.js";
 import { repairSessionFileIfNeeded } from "../session-file-repair.js";
 import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
+import { assertSessionTranscriptBudget } from "../session-transcript-budget.js";
 import { sanitizeToolUseResultPairing } from "../session-transcript-repair.js";
 import {
   acquireSessionWriteLock,
@@ -721,6 +722,7 @@ async function compactEmbeddedPiSessionDirectInner(
       }),
     });
     try {
+      await assertSessionTranscriptBudget(params.sessionFile);
       await repairSessionFileIfNeeded({
         sessionFile: params.sessionFile,
         warn: (message) => log.warn(message),

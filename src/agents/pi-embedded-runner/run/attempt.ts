@@ -81,6 +81,7 @@ import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { isXaiProvider } from "../../schema/clean-for-xai.js";
 import { repairSessionFileIfNeeded } from "../../session-file-repair.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
+import { assertSessionTranscriptBudget } from "../../session-transcript-budget.js";
 import { sanitizeToolUseResultPairing } from "../../session-transcript-repair.js";
 import {
   acquireSessionWriteLock,
@@ -1718,6 +1719,7 @@ export async function runEmbeddedAttempt(
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
     let removeToolResultContextGuard: (() => void) | undefined;
     try {
+      await assertSessionTranscriptBudget(params.sessionFile);
       await repairSessionFileIfNeeded({
         sessionFile: params.sessionFile,
         warn: (message) => log.warn(message),
@@ -2207,6 +2209,12 @@ export async function runEmbeddedAttempt(
             },
           );
         });
+      };
+
+      const boundedStream = activeSession.agent.streamFn;
+      activeSession.agent.streamFn = async (model, context, options) => {
+        await assertSessionTranscriptBudget(params.sessionFile);
+        return boundedStream(model, context, options);
       };
 
       const subscription = subscribeEmbeddedPiSession({

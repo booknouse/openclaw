@@ -5,6 +5,18 @@ import { buildSubagentSystemPrompt } from "./subagent-announce.js";
 import { buildAgentSystemPrompt, buildRuntimeLine } from "./system-prompt.js";
 
 describe("buildAgentSystemPrompt", () => {
+  it("provides current-session recall even without a memory index", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["sessions_history"],
+    });
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).toContain("omit sessionKey to search only the current session");
+    expect(prompt).toContain("includeTools=true");
+    expect(prompt).toContain("Later explicit user corrections take precedence");
+    expect(prompt).not.toContain("run memory_search on MEMORY.md");
+  });
+
   it("formats owner section for plain, hash, and missing owner lists", () => {
     const cases = typedCases<{
       name: string;

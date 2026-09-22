@@ -101,6 +101,39 @@ it("returns one runtime's context and background capability", async () => {
   });
   expect(reply.mock.calls[0][1]).not.toHaveProperty("handoff");
 });
+it("requests storage rotation despite a small compacted context and exports the complete latest correction", async () => {
+  fixture.background = false;
+  fixture.dedicated = true;
+  const manager = SessionManager.open(fixture.file);
+  manager.appendMessage({ role: "user", content: "old log ".repeat(1200000), timestamp: 3 });
+  const kept = manager.appendMessage({
+    role: "user",
+    content: "latest correction: target 50, threshold 35",
+    timestamp: 4,
+  });
+  manager.appendCompaction(
+    "Q17 retained; old measured 34 under threshold 28; do not claim full scan verified",
+    kept,
+    250000,
+  );
+  const open = vi.spyOn(SessionManager, "open");
+  try {
+    const body = (await request({ key: "key", handoff: true })).mock.calls[0][1];
+    expect(body.runtimeSafety).toMatchObject({
+      version: 1,
+      rotateAtBytes: 8 * 1024 * 1024,
+      rotationRequired: true,
+      canRotate: true,
+    });
+    expect(body.usedTokens).toBeLessThan(1000);
+    expect(body.handoff.complete).toBe(true);
+    expect(body.handoff.text).toContain("target 50, threshold 35");
+    expect(body.handoff.text).not.toContain("old log old log");
+    expect(open).not.toHaveBeenCalled();
+  } finally {
+    open.mockRestore();
+  }
+});
 it("includes all effective messages only when handoff is requested", async () => {
   const body = (await request({ key: "key", handoff: true })).mock.calls[0][1];
   expect(body.handoff.complete).toBe(true);
@@ -215,12 +248,12 @@ it("reuses unchanged context without reopening the transcript and invalidates af
   try {
     await request({ key: "key" });
     await request({ key: "key" });
-    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).not.toHaveBeenCalled();
     const manager = SessionManager.open(fixture.file);
     manager.appendMessage({ role: "user", content: "changed", timestamp: 10 });
     open.mockClear();
     await request({ key: "key" });
-    expect(open).toHaveBeenCalledOnce();
+    expect(open).not.toHaveBeenCalled();
   } finally {
     open.mockRestore();
   }

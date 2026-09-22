@@ -2,6 +2,20 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.5
+
+### Changes
+
+- Gateway/history: add bounded current-session search and reference-based recall before compaction, with owner-checked archive lookup and guidance for prior runtime segments.
+- Gateway/sessions: expose transcript-size thresholds for Server-managed runtime handoff, and export complete committed context through bounded readers.
+- Agents/runtime: reject oversized transcripts before full loading and subsequent model calls; bound session warmup metadata across long-lived runtime segments.
+
+### Fixes
+
+- Gateway/context: ignore stale pre-compaction usage when estimating the current context without changing historical billing records.
+- Gateway/history: keep reads asynchronous and bounded, preserve active-branch isolation, and report incomplete scans instead of treating them as missing history.
+- Logging/redaction: reuse unchanged text to reduce allocation during history scans while preserving redaction behavior.
+
 ## 2026.3.13-cortex.4
 
 ### Changes

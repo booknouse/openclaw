@@ -18,9 +18,15 @@ export function replacePatternBounded(
     return text.replace(pattern, replacer);
   }
 
-  let output = "";
+  let parts: string[] | undefined;
   for (let index = 0; index < text.length; index += chunkSize) {
-    output += text.slice(index, index + chunkSize).replace(pattern, replacer);
+    const chunk = text.slice(index, index + chunkSize);
+    const replaced = chunk.replace(pattern, replacer);
+    if (!parts && replaced !== chunk) {
+      parts = [text.slice(0, index)];
+    }
+    // Most log chunks contain no secrets. Avoid rebuilding the full input for every pattern.
+    parts?.push(replaced);
   }
-  return output;
+  return parts ? parts.join("") : text;
 }

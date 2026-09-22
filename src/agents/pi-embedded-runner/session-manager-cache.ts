@@ -8,6 +8,7 @@ type SessionManagerCacheEntry = {
 };
 
 const SESSION_MANAGER_CACHE = new Map<string, SessionManagerCacheEntry>();
+const MAX_SESSION_MANAGER_CACHE_ENTRIES = 1024;
 const DEFAULT_SESSION_MANAGER_TTL_MS = 45_000; // 45 seconds
 
 function getSessionManagerTtl(): number {
@@ -26,10 +27,14 @@ export function trackSessionManagerAccess(sessionFile: string): void {
     return;
   }
   const now = Date.now();
+  SESSION_MANAGER_CACHE.delete(sessionFile);
   SESSION_MANAGER_CACHE.set(sessionFile, {
     sessionFile,
     loadedAt: now,
   });
+  while (SESSION_MANAGER_CACHE.size > MAX_SESSION_MANAGER_CACHE_ENTRIES) {
+    SESSION_MANAGER_CACHE.delete(SESSION_MANAGER_CACHE.keys().next().value!);
+  }
 }
 
 function isSessionManagerCached(sessionFile: string): boolean {
@@ -42,7 +47,11 @@ function isSessionManagerCached(sessionFile: string): boolean {
   }
   const now = Date.now();
   const ttl = getSessionManagerTtl();
-  return now - entry.loadedAt <= ttl;
+  if (now - entry.loadedAt > ttl) {
+    SESSION_MANAGER_CACHE.delete(sessionFile);
+    return false;
+  }
+  return true;
 }
 
 export async function prewarmSessionFile(sessionFile: string): Promise<void> {

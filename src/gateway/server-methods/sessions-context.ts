@@ -4,7 +4,6 @@ import {
   convertToLlm,
   estimateTokens,
   serializeConversation,
-  SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import {
   getBackgroundCompactionJob,
@@ -19,10 +18,16 @@ import { compactionModelReference } from "../../agents/compaction-model-config.j
 import { getCompactionStatus } from "../../agents/compaction-status.js";
 import { getNativeCompactionFailure } from "../../agents/native-compaction-state.js";
 import { isEmbeddedPiRunActive } from "../../agents/pi-embedded.js";
+import {
+  TRANSCRIPT_ROTATE_BYTES,
+  TRANSCRIPT_HARD_BYTES,
+} from "../../agents/session-transcript-budget.js";
 import { stripToolResultDetails } from "../../agents/session-transcript-repair.js";
+import { countActiveDescendantRuns } from "../../agents/subagent-registry.js";
 import { loadConfig } from "../../config/config.js";
 import { loadSessionStore } from "../../config/sessions.js";
 import { ErrorCodes, errorShape } from "../protocol/index.js";
+import { readBoundedSessionContext } from "../session-bounded-context.js";
 import {
   resolveGatewaySessionStoreTarget,
   resolveSessionTranscriptCandidates,
@@ -31,7 +36,7 @@ import { cachedContext, cacheContext, contextFileSignature } from "./session-con
 import type { GatewayRequestHandler } from "./types.js";
 
 /** A single-session lookup; callers need not transfer the entire global status/index. */
-export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
+export const sessionsContext: GatewayRequestHandler = async ({ params, respond }) => {
   if (
     typeof params.key !== "string" ||
     !params.key.trim() ||
@@ -94,6 +99,7 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
     return;
   }
   const jobBeforeRead = getBackgroundCompactionJob(file);
+  const transcriptBytes = fs.statSync(file).size;
   const fileSignature = contextFileSignature(file, entry.sessionId);
   const signature = `${fileSignature}:${mode}:${budget}:${jobBeforeRead?.state ?? "idle"}`;
   const reply = (body: Record<string, unknown>) => {
@@ -113,6 +119,16 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
         contextTokens: budget,
         compaction,
         contextCapabilities: { statusVersion: 1, rejectIfCompacting: true },
+        runtimeSafety: {
+          version: 1,
+          transcriptBytes,
+          rotateAtBytes: TRANSCRIPT_ROTATE_BYTES,
+          hardLimitBytes: TRANSCRIPT_HARD_BYTES,
+          rotationRequired: transcriptBytes >= TRANSCRIPT_ROTATE_BYTES,
+          canRotate:
+            !running &&
+            countActiveDescendantRuns(target.canonicalKey ?? (params.key as string)) === 0,
+        },
         backgroundCompaction: {
           ...previous,
           ...(mode === "on-demand"
@@ -131,12 +147,20 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
     reply(cached);
     return;
   }
-  const manager = SessionManager.open(file);
-  const entries = manager.getBranch();
-  const messages = manager.buildSessionContext().messages;
-  const used = estimateBackgroundContextTokens(messages);
+  const snapshot = await readBoundedSessionContext(
+    file,
+    entry.sessionId,
+    jobBeforeRead?.state === "ready",
+  );
+  const entries = snapshot.entries;
+  const messages = snapshot.messages;
+  const used = snapshot.complete ? estimateBackgroundContextTokens(messages) : undefined;
   const job = getBackgroundCompactionJob(file);
-  const ready = enabled && job?.state === "ready" && backgroundSnapshotMatches(job, entries);
+  const ready =
+    enabled &&
+    snapshot.ancestorsComplete &&
+    job?.state === "ready" &&
+    backgroundSnapshotMatches(job, entries);
   let effectiveMessages = messages;
   if (ready && job.summary) {
     effectiveMessages = buildSessionContext([
@@ -155,7 +179,7 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
   const textEstimate = messages.reduce((n, m) => n + estimateTokens(m), 0);
   const effective = ready
     ? Math.ceil(effectiveMessages.reduce((n, m) => n + estimateTokens(m), 0) * 1.2) +
-      Math.max(0, used - textEstimate)
+      Math.max(0, (used ?? 0) - textEstimate)
     : used;
   const last = entries.findLast((item) => item.type === "compaction");
   const observedFailure = mode === "on-demand" ? getNativeCompactionFailure(file) : undefined;
@@ -163,10 +187,20 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
     observedFailure && (!last || Date.parse(last.timestamp) < observedFailure.failedAt)
       ? observedFailure
       : undefined;
-  const handoff =
-    params.handoff === true
-      ? serializeConversation(convertToLlm(stripToolResultDetails(effectiveMessages)))
+  const committedText =
+    params.handoff === true && snapshot.complete
+      ? serializeConversation(convertToLlm(stripToolResultDetails(messages)))
       : undefined;
+  const handoff =
+    params.handoff === true && snapshot.complete
+      ? ready
+        ? serializeConversation(convertToLlm(stripToolResultDetails(effectiveMessages)))
+        : committedText
+      : undefined;
+  const handoffFits =
+    snapshot.complete &&
+    handoff !== undefined &&
+    Buffer.byteLength(handoff, "utf8") <= 2 * 1024 * 1024;
   const payload = {
     observedAt: new Date().toISOString(),
     source: "context_estimate",
@@ -175,7 +209,9 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
     running,
     usedTokens: used,
     contextTokens: budget,
-    compactionCount: entries.filter((item) => item.type === "compaction").length,
+    compactionCount:
+      entry.compactionCount ?? entries.filter((item) => item.type === "compaction").length,
+    contextRead: { complete: snapshot.complete, reason: snapshot.reason },
     backgroundCompaction: {
       enabled,
       mode,
@@ -199,9 +235,20 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
       lastCompactionId: last?.id,
       checkpointVersion: 1,
     },
-    ...(handoff !== undefined ? { handoff: { text: handoff, complete: true } } : {}),
+    ...(params.handoff === true
+      ? {
+          handoff: {
+            text: handoffFits ? handoff : "",
+            complete: handoffFits,
+          },
+        }
+      : {}),
     // A recovery checkpoint always reflects committed history, never a ready preview.
-    ...(params.handoff === true && !running
+    ...(params.handoff === true &&
+    !running &&
+    snapshot.complete &&
+    committedText !== undefined &&
+    Buffer.byteLength(committedText, "utf8") <= 2 * 1024 * 1024
       ? {
           checkpoint: {
             version: 1,
@@ -210,7 +257,7 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
             compactionTimestamp: last?.timestamp ?? null,
             firstKeptEntryId: last?.firstKeptEntryId ?? null,
             tailEntryId: entries.at(-1)?.id ?? null,
-            text: serializeConversation(convertToLlm(stripToolResultDetails(messages))),
+            text: committedText,
             complete: true,
           },
         }
@@ -218,6 +265,7 @@ export const sessionsContext: GatewayRequestHandler = ({ params, respond }) => {
   };
   if (
     params.handoff !== true &&
+    snapshot.complete &&
     jobBeforeRead?.state !== "ready" &&
     contextFileSignature(file, entry.sessionId) === fileSignature
   ) {

@@ -62,6 +62,7 @@ export async function generateCompactionSummary(
         `Aim for at most ${targetTokens} output tokens across all five sections. ` +
         "Merge repeated facts; omit superseded attempts, repeated logs and completed steps that do not affect the next action. " +
         "Preserve active constraints, unresolved requests, decision rationale and verification limits even if the target must be exceeded. " +
+        "Preserve existing source file paths and historyRef references needed to recover exact results; never invent references. Keep these as compact pointers rather than copying full logs or result tables. " +
         identifierRule +
         "Use short bullets, no preamble, and write 'None' for an empty section.",
       messages: [{ role: "user", timestamp: Date.now(), content: userPrompt(params) }],

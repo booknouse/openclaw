@@ -214,6 +214,67 @@ describe("sessions tools", () => {
     );
   });
 
+  it("sessions_history defaults recall to the current conversation and preserves references", async () => {
+    callGatewayMock.mockImplementation(async (opts: { method?: string }) =>
+      opts.method === "chat.history"
+        ? {
+            messages: [
+              {
+                role: "toolResult",
+                content: [{ type: "text", text: "Q17 measured 34" }],
+                historyRef: "s-current:entry1",
+                historyExcerpt: { truncated: true, redacted: true },
+              },
+            ],
+            recall: { matched: 1, hasMore: false },
+          }
+        : {},
+    );
+    const tool = createOpenClawTools({ agentSessionKey: "agent:main:current" }).find(
+      (candidate) => candidate.name === "sessions_history",
+    )!;
+    const result = await tool.execute("recall", { query: "Q17", includeTools: true, limit: 3 });
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "chat.history",
+        params: expect.objectContaining({
+          sessionKey: "agent:main:current",
+          query: "Q17",
+          includeTools: true,
+          limit: 3,
+        }),
+      }),
+    );
+    expect(result.details).toMatchObject({
+      messages: [{ historyRef: "s-current:entry1" }],
+      recall: { matched: 1 },
+      contentTruncated: true,
+      contentRedacted: true,
+    });
+    await tool.execute("around", { around: "s-current:entry1" });
+    expect(callGatewayMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          sessionKey: "agent:main:current",
+          around: "s-current:entry1",
+        }),
+      }),
+    );
+  });
+
+  it("sessions_history rejects ambiguous or unavailable recall scope without a gateway read", async () => {
+    const tool = createOpenClawTools().find((candidate) => candidate.name === "sessions_history")!;
+    const missing = await tool.execute("missing", { query: "Q17" });
+    expect(missing.details).toMatchObject({ status: "error" });
+    const ambiguous = await tool.execute("ambiguous", {
+      sessionKey: "main",
+      query: "Q17",
+      around: "s:id",
+    });
+    expect(ambiguous.details).toMatchObject({ status: "error" });
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
   it("sessions_history filters tool messages by default", async () => {
     callGatewayMock.mockImplementation(async (opts: unknown) => {
       const request = opts as { method?: string };

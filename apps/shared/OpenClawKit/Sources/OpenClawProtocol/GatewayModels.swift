@@ -1338,6 +1338,7 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let subagentrole: AnyCodable?
     public let subagentcontrolscope: AnyCodable?
     public let sendpolicy: AnyCodable?
+    public let cronpolicy: AnyCodable?
     public let groupactivation: AnyCodable?
 
     public init(
@@ -1360,6 +1361,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         subagentrole: AnyCodable?,
         subagentcontrolscope: AnyCodable?,
         sendpolicy: AnyCodable?,
+        cronpolicy: AnyCodable?,
         groupactivation: AnyCodable?)
     {
         self.key = key
@@ -1381,6 +1383,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.subagentrole = subagentrole
         self.subagentcontrolscope = subagentcontrolscope
         self.sendpolicy = sendpolicy
+        self.cronpolicy = cronpolicy
         self.groupactivation = groupactivation
     }
 
@@ -1404,6 +1407,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         case subagentrole = "subagentRole"
         case subagentcontrolscope = "subagentControlScope"
         case sendpolicy = "sendPolicy"
+        case cronpolicy = "cronPolicy"
         case groupactivation = "groupActivation"
     }
 }
@@ -1428,21 +1432,25 @@ public struct SessionsResetParams: Codable, Sendable {
 
 public struct SessionsDeleteParams: Codable, Sendable {
     public let key: String
+    public let onlyifidle: Bool?
     public let deletetranscript: Bool?
     public let emitlifecyclehooks: Bool?
 
     public init(
         key: String,
+        onlyifidle: Bool?,
         deletetranscript: Bool?,
         emitlifecyclehooks: Bool?)
     {
         self.key = key
+        self.onlyifidle = onlyifidle
         self.deletetranscript = deletetranscript
         self.emitlifecyclehooks = emitlifecyclehooks
     }
 
     private enum CodingKeys: String, CodingKey {
         case key
+        case onlyifidle = "onlyIfIdle"
         case deletetranscript = "deleteTranscript"
         case emitlifecyclehooks = "emitLifecycleHooks"
     }
@@ -3343,22 +3351,39 @@ public struct DevicePairResolvedEvent: Codable, Sendable {
 public struct ChatHistoryParams: Codable, Sendable {
     public let sessionkey: String
     public let limit: Int?
+    public let query: String?
+    public let around: String?
+    public let includetools: Bool?
+    public let archivedirectory: String?
 
     public init(
         sessionkey: String,
-        limit: Int?)
+        limit: Int?,
+        query: String?,
+        around: String?,
+        includetools: Bool?,
+        archivedirectory: String?)
     {
         self.sessionkey = sessionkey
         self.limit = limit
+        self.query = query
+        self.around = around
+        self.includetools = includetools
+        self.archivedirectory = archivedirectory
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
         case limit
+        case query
+        case around
+        case includetools = "includeTools"
+        case archivedirectory = "archiveDirectory"
     }
 }
 
 public struct ChatSendParams: Codable, Sendable {
+    public let rejectifcompacting: Bool?
     public let sessionkey: String
     public let message: String
     public let thinking: String?
@@ -3370,6 +3395,7 @@ public struct ChatSendParams: Codable, Sendable {
     public let idempotencykey: String
 
     public init(
+        rejectifcompacting: Bool?,
         sessionkey: String,
         message: String,
         thinking: String?,
@@ -3380,6 +3406,7 @@ public struct ChatSendParams: Codable, Sendable {
         systemprovenancereceipt: String?,
         idempotencykey: String)
     {
+        self.rejectifcompacting = rejectifcompacting
         self.sessionkey = sessionkey
         self.message = message
         self.thinking = thinking
@@ -3392,6 +3419,7 @@ public struct ChatSendParams: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case rejectifcompacting = "rejectIfCompacting"
         case sessionkey = "sessionKey"
         case message
         case thinking

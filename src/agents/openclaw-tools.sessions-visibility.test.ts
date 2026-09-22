@@ -73,6 +73,17 @@ describe("sessions tools visibility", () => {
     });
     expect(denied.details).toMatchObject({ status: "forbidden" });
 
+    for (const recallParams of [{ query: "Q17" }, { around: "other-session:message-id" }]) {
+      const recalled = await tool.execute("denied-recall", {
+        sessionKey: "agent:main:discord:direct:someone-else",
+        ...recallParams,
+      });
+      expect(recalled.details).toMatchObject({ status: "forbidden" });
+    }
+    expect(callGatewayMock.mock.calls.some(([request]) => request.method === "chat.history")).toBe(
+      false,
+    );
+
     const allowed = await tool.execute("call2", { sessionKey: "subagent:child-1" });
     expect(allowed.details).toMatchObject({
       sessionKey: "subagent:child-1",

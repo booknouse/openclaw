@@ -27,6 +27,10 @@ export const ChatHistoryParamsSchema = Type.Object(
   {
     sessionKey: NonEmptyString,
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
+    query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+    around: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+    includeTools: Type.Optional(Type.Boolean()),
+    archiveDirectory: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
   },
   { additionalProperties: false },
 );

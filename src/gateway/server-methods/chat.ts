@@ -52,10 +52,13 @@ import {
 } from "../protocol/index.js";
 import { CHAT_SEND_SESSION_KEY_MAX_LENGTH } from "../protocol/schema/primitives.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
+import { resolveArchivedHistory } from "../session-archive-history.js";
+import { readBoundedRecentHistory } from "../session-bounded-context.js";
+import { readSessionHistoryRecall } from "../session-history-recall.js";
 import {
   capArrayByJsonBytes,
   loadSessionEntry,
-  readSessionMessages,
+  resolveSessionTranscriptCandidates,
   resolveSessionModelRef,
 } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
@@ -933,18 +936,92 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const { sessionKey, limit } = params as {
+    const { sessionKey, limit, query, around, includeTools, archiveDirectory } = params as {
       sessionKey: string;
       limit?: number;
+      query?: string;
+      around?: string;
+      includeTools?: boolean;
+      archiveDirectory?: string;
     };
+    if (
+      (query !== undefined && !query.trim()) ||
+      (around !== undefined && !around.trim()) ||
+      (query !== undefined && around !== undefined) ||
+      (archiveDirectory !== undefined && query === undefined && around === undefined)
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "provide either a non-empty query or around reference",
+        ),
+      );
+      return;
+    }
     const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
     const sessionId = entry?.sessionId;
-    const rawMessages =
-      sessionId && storePath ? readSessionMessages(sessionId, storePath, entry?.sessionFile) : [];
+    if (archiveDirectory) {
+      try {
+        const archive = await resolveArchivedHistory(cfg, sessionKey, archiveDirectory);
+        const recalled = await readSessionHistoryRecall({
+          ...archive,
+          query,
+          around,
+          limit,
+          includeTools,
+        });
+        respond(true, { sessionKey, sessionId: archive.sessionId, ...recalled });
+      } catch {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "archive_history_unavailable"),
+        );
+      }
+      return;
+    }
+    if (query !== undefined || around !== undefined) {
+      const recalled =
+        sessionId && storePath
+          ? await readSessionHistoryRecall({
+              sessionId,
+              storePath,
+              sessionFile: entry?.sessionFile,
+              query,
+              around,
+              limit,
+              includeTools,
+            })
+          : {
+              messages: [],
+              recall: {
+                matched: 0,
+                hasMore: true,
+                complete: false,
+                unavailable: true,
+                reason: "unavailable",
+              },
+            };
+      respond(true, { sessionKey, sessionId, ...recalled });
+      return;
+    }
     const hardMax = 1000;
     const defaultLimit = 200;
     const requested = typeof limit === "number" ? limit : defaultLimit;
     const max = Math.min(hardMax, requested);
+    const historyFile =
+      sessionId && storePath
+        ? resolveSessionTranscriptCandidates(sessionId, storePath, entry?.sessionFile).find(
+            (file) => fs.existsSync(file),
+          )
+        : undefined;
+    const history =
+      historyFile && sessionId
+        ? await readBoundedRecentHistory(historyFile, sessionId, max)
+        : { messages: [], historyRead: { complete: true } };
+    const rawMessages = history.messages;
     const sliced = rawMessages.length > max ? rawMessages.slice(-max) : rawMessages;
     const sanitized = stripEnvelopeFromMessages(sliced);
     const normalized = sanitizeChatHistoryMessages(sanitized);
@@ -980,6 +1057,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey,
       sessionId,
       messages: bounded.messages,
+      historyRead: history.historyRead,
       thinkingLevel,
       fastMode: entry?.fastMode,
       verboseLevel,
