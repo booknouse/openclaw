@@ -2221,6 +2221,11 @@ export async function runEmbeddedAttempt(
       const boundedStream = activeSession.agent.streamFn;
       activeSession.agent.streamFn = async (model, context, options) => {
         await assertSessionTranscriptBudget(params.sessionFile);
+        // The SDK may resume prompt() after a cancelled pre-prompt compaction.
+        // Its fresh per-prompt controller must not revive this aborted run.
+        if (runAbortController.signal.aborted) {
+          throw makeAbortError(runAbortController.signal);
+        }
         return boundedStream(model, context, options);
       };
 

@@ -18,14 +18,16 @@ export async function waitForCompactionRetryWithAggregateTimeout(params: {
   while (true) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const result = await params.abortable(
-        Promise.race([
-          waitPromise,
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), timeoutMs);
-          }),
-        ]),
-      );
+      const pending = Promise.race([
+        waitPromise,
+        new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), timeoutMs);
+        }),
+      ]);
+      // An already-aborted caller can reject without subscribing to pending.
+      // Teardown may then reject the compaction wait; keep that rejection handled.
+      void pending.catch(() => {});
+      const result = await params.abortable(pending);
 
       if (result === "done") {
         break;

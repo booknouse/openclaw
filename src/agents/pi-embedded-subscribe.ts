@@ -11,6 +11,7 @@ import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
+import { handleAutoCompactionEnd } from "./pi-embedded-subscribe.handlers.compaction.js";
 import { createEmbeddedPiSessionEventHandler } from "./pi-embedded-subscribe.handlers.js";
 import type {
   EmbeddedPiSubscribeContext,
@@ -641,7 +642,12 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     getCompactionCount: () => compactionCount,
   };
 
-  const sessionUnsubscribe = params.session.subscribe(createEmbeddedPiSessionEventHandler(ctx));
+  const handleSessionEvent = createEmbeddedPiSessionEventHandler(ctx);
+  const sessionUnsubscribe = params.session.subscribe((event) => {
+    if (!state.unsubscribed) {
+      handleSessionEvent(event);
+    }
+  });
 
   const unsubscribe = () => {
     if (state.unsubscribed) {
@@ -673,7 +679,19 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
         log.warn(`unsubscribe: compaction abort failed runId=${params.runId} err=${String(err)}`);
       }
     }
-    sessionUnsubscribe();
+    try {
+      // The SDK emits its end event asynchronously after abortCompaction. Once
+      // unsubscribed, finish only this run's operation instead of waiting for it.
+      if (state.compactionInFlight) {
+        handleAutoCompactionEnd(ctx, {
+          result: undefined,
+          aborted: true,
+          willRetry: false,
+        });
+      }
+    } finally {
+      sessionUnsubscribe();
+    }
   };
 
   return {

@@ -135,3 +135,24 @@ describe("waitForCompactionRetryWithAggregateTimeout", () => {
     });
   });
 });
+
+it("handles late wait rejection after an already-aborted caller abandons the race", async () => {
+  let rejectWait!: (error: Error) => void;
+  const wait = new Promise<void>((_resolve, reject) => {
+    rejectWait = reject;
+  });
+  const aborted = new Error("caller already aborted");
+  aborted.name = "AbortError";
+  await expect(
+    waitForCompactionRetryWithAggregateTimeout({
+      waitForCompactionRetry: () => wait,
+      abortable: async () => {
+        throw aborted;
+      },
+      aggregateTimeoutMs: 60000,
+    }),
+  ).rejects.toBe(aborted);
+  // unsubscribe rejects the wait after the abortable wrapper has already returned.
+  rejectWait(new Error("late compaction teardown rejection"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
