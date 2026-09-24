@@ -8,6 +8,17 @@ import { AgentDefaultsSchema } from "./zod-schema.agent-defaults.js";
 
 describe("compaction model pools configuration", () => {
   const models = { primary: { model: "first/summary" }, secondary: { model: "second/summary" } };
+  it.each([1000, 180000, 300000])("accepts bounded synchronous timeout %s", (timeoutMs) => {
+    expect(AgentDefaultsSchema.parse({ compaction: { timeoutMs } })?.compaction?.timeoutMs).toBe(
+      timeoutMs,
+    );
+  });
+  it.each([0, 999, 300001, Infinity, 1.5, "180000"])(
+    "rejects invalid synchronous timeout %s",
+    (timeoutMs) => {
+      expect(AgentDefaultsSchema.safeParse({ compaction: { timeoutMs } }).success).toBe(false);
+    },
+  );
   it("accepts two pools with background compaction and defaults to 4 plus 10", () => {
     const result = AgentDefaultsSchema.parse({
       compaction: { models, background: { enabled: true } },

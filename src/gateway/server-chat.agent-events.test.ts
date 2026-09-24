@@ -71,6 +71,63 @@ describe("agent event handler", () => {
     };
   }
 
+  it("keeps the chat mapping through overflow recovery and emits the original final", () => {
+    const h = createHarness();
+    h.chatRunState.registry.add("run-recovery", {
+      sessionKey: "session-recovery",
+      clientRunId: "client-recovery",
+    });
+    h.handler({
+      runId: "run-recovery",
+      seq: 1,
+      stream: "lifecycle",
+      ts: Date.now(),
+      data: { phase: "recovering", error: "context_length_exceeded" },
+    });
+    expect(chatBroadcastCalls(h.broadcast)).toHaveLength(0);
+    h.handler({
+      runId: "run-recovery",
+      seq: 2,
+      stream: "compaction",
+      ts: Date.now(),
+      data: { phase: "start" },
+    });
+    h.handler({
+      runId: "run-recovery",
+      seq: 3,
+      stream: "compaction",
+      ts: Date.now(),
+      data: { phase: "end", outcome: "succeeded", willRetry: true },
+    });
+    expect(chatBroadcastCalls(h.broadcast)).toHaveLength(0);
+    h.handler({
+      runId: "run-recovery",
+      seq: 4,
+      stream: "assistant",
+      ts: Date.now(),
+      data: { text: "17+26=43", delta: "17+26=43" },
+    });
+    h.handler({
+      runId: "run-recovery",
+      seq: 5,
+      stream: "lifecycle",
+      ts: Date.now(),
+      data: { phase: "end" },
+    });
+    const finals = chatBroadcastCalls(h.broadcast).filter(
+      ([, payload]) => payload.state === "final",
+    );
+    expect(finals).toHaveLength(1);
+    expect(finals[0][1]).toMatchObject({
+      runId: "client-recovery",
+      sessionKey: "session-recovery",
+      message: { content: [{ type: "text", text: "17+26=43" }] },
+    });
+    expect(chatBroadcastCalls(h.broadcast).some(([, payload]) => payload.state === "error")).toBe(
+      false,
+    );
+  });
+
   function emitRun1AssistantText(
     harness: ReturnType<typeof createHarness>,
     text: string,

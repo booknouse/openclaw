@@ -96,7 +96,7 @@ describe("bounded compaction work", () => {
       },
       50,
     );
-    const assertion = expect(task).rejects.toMatchObject({ name: "AbortError" });
+    const assertion = expect(task).rejects.toMatchObject({ name: "CompactionTimeoutError" });
     await vi.advanceTimersByTimeAsync(50);
     await assertion;
     expect(child.aborted).toBe(true);

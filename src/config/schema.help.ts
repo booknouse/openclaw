@@ -1057,6 +1057,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Legacy single-model concurrency per gateway process (default: 4). When compaction.models is configured, background task capacity is the sum of those model pool limits and this legacy setting is ignored.",
   "agents.defaults.compaction.background.reserveTokens":
     "Remaining context capacity reserved for incoming turns and Server fallback rotation (default: 20000 tokens).",
+  "agents.defaults.compaction.timeoutMs":
+    "Whole synchronous/manual compaction budget, including queueing, model retries and summary merging (default: 180000 ms; maximum: 300000 ms). The enclosing agent timeout still applies. Separate from background.timeoutMs.",
   "agents.defaults.compaction.models":
     "Ordered model pools shared by synchronous, manual and background compaction per gateway process. Overrides the legacy model and background.maxConcurrent settings. If both pools are full, requests wait within their existing timeout budget.",
   "agents.defaults.compaction.models.primary":

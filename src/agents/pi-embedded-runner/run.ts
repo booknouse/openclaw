@@ -62,6 +62,7 @@ import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModel } from "./model.js";
+import { runWithOverflowRecovery } from "./overflow-recovery.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import { createFailoverDecisionLogger } from "./run/failover-observation.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
@@ -255,6 +256,12 @@ function buildErrorAgentMeta(params: {
 }
 
 export async function runEmbeddedPiAgent(
+  params: RunEmbeddedPiAgentParams,
+): Promise<EmbeddedPiRunResult> {
+  return runWithOverflowRecovery(params, runEmbeddedPiAgentInner);
+}
+
+async function runEmbeddedPiAgentInner(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
   const sessionLane = resolveSessionLane(params.sessionKey?.trim() || params.sessionId);

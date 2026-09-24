@@ -5,7 +5,11 @@ import {
   buildTextObservationFields,
   sanitizeForConsole,
 } from "./pi-embedded-error-observation.js";
-import { classifyFailoverReason, formatAssistantErrorText } from "./pi-embedded-helpers.js";
+import {
+  classifyFailoverReason,
+  formatAssistantErrorText,
+  isLikelyContextOverflowError,
+} from "./pi-embedded-helpers.js";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { isAssistantMessage } from "./pi-embedded-utils.js";
 
@@ -62,19 +66,22 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
       ...observedError,
       consoleMessage: `embedded run agent end: runId=${safeRunId} isError=true model=${safeModel} provider=${safeProvider} error=${safeErrorText}`,
     });
+    // SDK agent_end precedes its auto-compaction check. Keep the request linked
+    // while the outer runner owns overflow recovery and the eventual terminal event.
+    const phase = isLikelyContextOverflowError(rawError ?? "") ? "recovering" : "error";
     emitAgentEvent({
       runId: ctx.params.runId,
       stream: "lifecycle",
       data: {
-        phase: "error",
+        phase,
         error: safeErrorText,
-        endedAt: Date.now(),
+        ...(phase === "error" ? { endedAt: Date.now() } : {}),
       },
     });
     void ctx.params.onAgentEvent?.({
       stream: "lifecycle",
       data: {
-        phase: "error",
+        phase,
         error: safeErrorText,
       },
     });

@@ -5,6 +5,8 @@ import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-r
 
 export type CompactionSafeguardRuntimeValue = {
   abortSignal?: AbortSignal;
+  timeoutMs?: number;
+  failure?: { code: string; message: string };
   /** Share the bounded concise generator with background compaction. */
   conciseSummary?: boolean;
   maxHistoryShare?: number;

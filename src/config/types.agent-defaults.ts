@@ -319,6 +319,8 @@ export type AgentCompactionConfig = {
     maxConcurrent?: number;
     reserveTokens?: number;
   };
+  /** Whole synchronous compaction budget in milliseconds (default 180000, max 300000). */
+  timeoutMs?: number;
   /** Compaction summarization mode. */
   mode?: AgentCompactionMode;
   /** Pi reserve tokens target before floor enforcement. */

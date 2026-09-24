@@ -94,9 +94,31 @@ describe("automatic compaction model override", () => {
     const f = fixture();
     setCompactionSafeguardRuntime(f.sessionManager, { recentTurnsPreserve: 0 });
     summarize.mockImplementation(() => new Promise(() => {}));
-    const task = f.handler(f.event, f.ctx);
+    let settled = false;
+    const task = f.handler(f.event, f.ctx).then((value) => {
+      settled = true;
+      return value;
+    });
     await vi.advanceTimersByTimeAsync(60000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(120000);
     await expect(task).resolves.toEqual({ cancel: true });
+    expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure?.code).toBe(
+      "compaction_timeout",
+    );
+  });
+
+  it("uses the configured whole-compaction deadline", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    setCompactionSafeguardRuntime(f.sessionManager, { recentTurnsPreserve: 0, timeoutMs: 1000 });
+    summarize.mockImplementation(() => new Promise(() => {}));
+    const task = f.handler(f.event, f.ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(task).resolves.toEqual({ cancel: true });
+    expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure).toMatchObject({
+      code: "compaction_timeout",
+    });
   });
 
   it("installs the override for automatic compaction even when mode is default", () => {

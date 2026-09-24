@@ -91,6 +91,7 @@ export function buildEmbeddedExtensionFactories(params: {
     });
     setCompactionSafeguardRuntime(params.sessionManager, {
       abortSignal: params.abortSignal,
+      timeoutMs: compactionCfg?.timeoutMs,
       conciseSummary: Boolean(compactionModelReference(compactionCfg)),
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,

@@ -480,6 +480,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.defaults.compaction.background.retryDelayMs": "Background Summary Retry Delay (ms)",
   "agents.defaults.compaction.background.maxConcurrent": "Background Summary Concurrency",
   "agents.defaults.compaction.background.reserveTokens": "Background Compaction Capacity Reserve",
+  "agents.defaults.compaction.timeoutMs": "Synchronous Compaction Timeout (ms)",
   "agents.defaults.compaction.models": "Compaction Model Pools",
   "agents.defaults.compaction.models.primary": "Preferred Compaction Model Pool",
   "agents.defaults.compaction.models.primary.model": "Preferred Compaction Model",

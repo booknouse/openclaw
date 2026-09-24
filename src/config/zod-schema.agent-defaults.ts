@@ -86,6 +86,7 @@ export const AgentDefaultsSchema = z
       .optional(),
     compaction: z
       .object({
+        timeoutMs: z.number().int().min(1000).max(300000).optional(),
         models: z
           .object({
             primary: z

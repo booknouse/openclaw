@@ -282,6 +282,8 @@ describe("isContextOverflowError", () => {
       "request_too_large",
       "Request exceeds the maximum size",
       "context length exceeded",
+      "400 context_length_exceeded · response.failed · Your input exceeds the context window of this model.",
+      "Your input exceeds the context window of this model.",
       "Maximum context length",
       "prompt is too long: 208423 tokens > 200000 maximum",
       "Context overflow: Summarization failed",
@@ -424,6 +426,7 @@ describe("isLikelyContextOverflowError", () => {
       "Model context window is 128k tokens, you requested 256k tokens",
       "Context window exceeded: requested 12000 tokens",
       "Prompt too large for this model",
+      "400 context_length_exceeded · response.failed · Your input exceeds the context window of this model.",
     ];
     for (const sample of samples) {
       expect(isLikelyContextOverflowError(sample)).toBe(true);

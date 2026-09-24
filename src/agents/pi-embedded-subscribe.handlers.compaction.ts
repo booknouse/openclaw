@@ -3,6 +3,7 @@ import { emitAgentEvent } from "../infra/agent-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { beginCompaction, endCompaction } from "./compaction-status.js";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
+import { getCompactionSafeguardRuntime } from "./pi-extensions/compaction-safeguard-runtime.js";
 import { makeZeroUsageSnapshot } from "./usage.js";
 
 export function handleAutoCompactionStart(ctx: EmbeddedPiSubscribeContext) {
@@ -55,13 +56,17 @@ export function handleAutoCompactionEnd(
   // and context was trimmed — the counter must reflect that.  (#38905)
   const hasResult = evt.result != null;
   const wasAborted = Boolean(evt.aborted);
+  const failure = getCompactionSafeguardRuntime(ctx.params.session?.sessionManager)?.failure;
+  const outcome = failure
+    ? "failed"
+    : wasAborted
+      ? "cancelled"
+      : hasResult
+        ? "succeeded"
+        : "failed";
   const statusSessionId = ctx.params.session.sessionId ?? ctx.params.sessionId;
   if (statusSessionId) {
-    endCompaction(
-      statusSessionId,
-      `auto:${ctx.params.runId}`,
-      wasAborted ? "cancelled" : hasResult ? "succeeded" : "failed",
-    );
+    endCompaction(statusSessionId, `auto:${ctx.params.runId}`, outcome);
   }
   if (hasResult && !wasAborted) {
     ctx.incrementCompactionCount?.();
@@ -80,7 +85,8 @@ export function handleAutoCompactionEnd(
     data: {
       phase: "end",
       willRetry,
-      outcome: wasAborted ? "cancelled" : hasResult ? "succeeded" : "failed",
+      outcome,
+      ...(failure ? { errorCode: failure.code, error: failure.message } : {}),
     },
   });
   void ctx.params.onAgentEvent?.({
@@ -88,7 +94,8 @@ export function handleAutoCompactionEnd(
     data: {
       phase: "end",
       willRetry,
-      outcome: wasAborted ? "cancelled" : hasResult ? "succeeded" : "failed",
+      outcome,
+      ...(failure ? { errorCode: failure.code, error: failure.message } : {}),
     },
   });
 

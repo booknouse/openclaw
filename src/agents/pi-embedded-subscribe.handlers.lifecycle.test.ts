@@ -38,6 +38,29 @@ function createContext(
 }
 
 describe("handleAgentEnd", () => {
+  it("keeps context overflow nonterminal before the SDK starts compaction", () => {
+    const onAgentEvent = vi.fn();
+    const ctx = createContext(
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage:
+          "400 context_length_exceeded: Your input exceeds the context window of this model.",
+        content: [],
+      },
+      { onAgentEvent },
+    );
+    handleAgentEnd(ctx);
+    expect(onAgentEvent).toHaveBeenCalledWith({
+      stream: "lifecycle",
+      data: expect.objectContaining({ phase: "recovering" }),
+    });
+    expect(onAgentEvent).not.toHaveBeenCalledWith({
+      stream: "lifecycle",
+      data: expect.objectContaining({ phase: "error" }),
+    });
+  });
+
   it("logs the resolved error message when run ends with assistant error", () => {
     const onAgentEvent = vi.fn();
     const ctx = createContext(

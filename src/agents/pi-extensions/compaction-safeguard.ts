@@ -12,7 +12,7 @@ import { openBoundaryFile } from "../../infra/boundary-file-read.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { extractKeywords, isQueryStopWordToken } from "../../memory/query-expansion.js";
 import { collectProtectedContext } from "../background-compaction.js";
-import { withCompactionDeadline } from "../compaction-budget.js";
+import { CompactionTimeoutError, withCompactionDeadline } from "../compaction-budget.js";
 import { compactionSummaryFits } from "../compaction-summary.js";
 import {
   BASE_CHUNK_RATIO,
@@ -1034,23 +1034,37 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      return { cancel: true };
+      throw error;
     }
   };
   api.on("session_before_compact", async (event, ctx) => {
     const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
     const callerSignal = runtime?.abortSignal;
+    if (runtime) {
+      runtime.failure = undefined;
+    }
     const file = ctx.sessionManager.getSessionFile?.();
     try {
       const parent = callerSignal ? AbortSignal.any([event.signal, callerSignal]) : event.signal;
-      const result = await withCompactionDeadline(parent, (signal) =>
-        compact({ ...event, signal }, ctx),
+      const result = await withCompactionDeadline(
+        parent,
+        (signal) => compact({ ...event, signal }, ctx),
+        runtime?.timeoutMs,
       );
       if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
         recordNativeCompactionResult(file, "compaction" in result);
       }
       return result;
-    } catch {
+    } catch (error) {
+      if (runtime && !event.signal.aborted && !callerSignal?.aborted) {
+        runtime.failure =
+          error instanceof CompactionTimeoutError
+            ? { code: "compaction_timeout", message: error.message }
+            : {
+                code: "compaction_failed",
+                message: "Context compaction failed; history preserved.",
+              };
+      }
       if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
         recordNativeCompactionResult(file, false);
       }
