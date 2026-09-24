@@ -2,6 +2,19 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.6
+
+### Changes
+
+- Agents/compaction: make the whole synchronous compaction deadline configurable with a 180-second default and a 300-second maximum, while preserving caller cancellation.
+- Agents/model requests: append the executing agent ID to OpenAI-compatible HTTP User-Agent headers for dialogue, tool continuations and compaction, preserving the SDK version and concurrent-agent isolation.
+
+### Fixes
+
+- Gateway/chat: keep the original request linked while recovering from context overflow and emit a terminal result only after recovery finishes.
+- Agents/compaction: distinguish timeout from user cancellation and prevent failed recovery from returning an older historical assistant response.
+- Agents/errors: recognize provider context_length_exceeded and input-exceeds-context-window responses without treating quota errors as recoverable overflow.
+
 ## 2026.3.13-cortex.5
 
 ### Changes

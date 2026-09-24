@@ -782,6 +782,7 @@ async function compactEmbeddedPiSessionDirectInner(
       // Sets compaction/pruning runtime state and returns extension factories
       // that must be passed to the resource loader for the safeguard to be active.
       const extensionFactories = buildEmbeddedExtensionFactories({
+        agentId: sessionAgentId,
         cfg: params.config,
         sessionManager,
         provider,

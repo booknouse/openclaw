@@ -4,6 +4,7 @@ import type { CompactionSummaryRunner } from "../compaction-model.runtime.js";
 import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-registry.js";
 
 export type CompactionSafeguardRuntimeValue = {
+  agentId?: string;
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   failure?: { code: string; message: string };

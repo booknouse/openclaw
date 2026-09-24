@@ -5,6 +5,7 @@ import { compactionModelPools } from "./compaction-model-config.js";
 import { runCompactionModelCall } from "./compaction-model-limiter.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { getApiKeyForModel } from "./model-auth.js";
+import { withAgentUserAgent } from "./model-user-agent.js";
 import { resolveModel } from "./pi-embedded-runner/model.js";
 
 const log = createSubsystemLogger("compaction-model");
@@ -17,6 +18,7 @@ export type CompactionSummaryRunner = <T>(
 /** Resolve model metadata before sizing chunks; select the actual model for each request. */
 export async function resolveCompactionModel(params: {
   cfg: OpenClawConfig;
+  agentId?: string;
   provider: string;
   agentDir?: string;
   authProfileId?: string;
@@ -33,7 +35,11 @@ export async function resolveCompactionModel(params: {
     if (!model) {
       throw new Error("compaction_model_unavailable");
     }
-    return { model, key: `${model.provider}/${model.id}`, maxConcurrent: pool.maxConcurrent };
+    return {
+      model: withAgentUserAgent(model, params.agentId),
+      key: `${model.provider}/${model.id}`,
+      maxConcurrent: pool.maxConcurrent,
+    };
   });
   if (new Set(models.map((pool) => pool.key)).size !== models.length) {
     throw new Error("compaction_model_duplicate_pools");

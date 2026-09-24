@@ -1,3 +1,4 @@
+import { resolveSessionAgentId } from "./agent-scope.js";
 import type { BackgroundCompactionPreparation } from "./background-compaction-state.js";
 import type { BackgroundCompactionParams } from "./background-compaction.js";
 import { generateCompactionSummary } from "./compaction-summary.js";
@@ -14,6 +15,7 @@ export async function summarizeBackgroundContext(
   await ensureOpenClawModelsJson(params.config, params.agentDir);
   const { resolveCompactionModel } = await import("./compaction-model.runtime.js");
   const { runSummary } = await resolveCompactionModel({
+    agentId: resolveSessionAgentId({ sessionKey: params.sessionKey, config: params.config }),
     cfg: params.config!,
     provider: params.provider,
     agentDir: params.agentDir,

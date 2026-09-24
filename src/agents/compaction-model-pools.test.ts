@@ -62,9 +62,11 @@ it("shares primary and secondary capacity across synchronous and background summ
   const resolved = await resolveCompactionModel({
     cfg,
     provider: "dialogue",
+    agentId: "xuebing",
     authProfileId: "dialogue-profile",
   });
   expect(resolved.contextWindow).toBe(10000);
+  expect(resolved.model.headers?.["User-Agent"]).toContain(" OpenClaw-Agent/xuebing");
   const signal = new AbortController().signal;
   const params = {
     messages: [{ role: "user" as const, content: "Preserve this fact", timestamp: 1 }],
@@ -81,6 +83,7 @@ it("shares primary and secondary capacity across synchronous and background summ
   const selected = vi.fn();
   const background = summarizeBackgroundContext({
     onModelSelected: selected,
+    sessionKey: "agent:wusy:tenant:wusy:web:test:role:user",
     sessionId: "test-session",
     sessionFile: "/test/session.jsonl",
     tokenBudget: 30000,
@@ -98,6 +101,8 @@ it("shares primary and secondary capacity across synchronous and background summ
   });
   await vi.waitFor(() => expect(mocks.complete).toHaveBeenCalledOnce());
   expect(selected).toHaveBeenCalledWith("secondary/summary");
+  expect(mocks.summary.mock.calls[0][1].headers["User-Agent"]).toContain(" OpenClaw-Agent/xuebing");
+  expect(mocks.complete.mock.calls[0][0].headers["User-Agent"]).toContain(" OpenClaw-Agent/wusy");
   expect(mocks.summary.mock.calls[0][1]).toMatchObject({ provider: "primary", reasoning: false });
   expect(mocks.summary.mock.calls[0][3]).toBe("primary-key");
   expect(mocks.complete.mock.calls[0][0]).toMatchObject({

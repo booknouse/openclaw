@@ -28,6 +28,7 @@ import {
   summarizeInStages,
 } from "../compaction.js";
 import { collectTextContentBlocks } from "../content-blocks.js";
+import { withAgentUserAgent } from "../model-user-agent.js";
 import { recordNativeCompactionResult } from "../native-compaction-state.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
@@ -739,7 +740,8 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     const identifierPolicy = runtime?.identifierPolicy ?? "strict";
     const override = await runtime?.resolveModel?.();
     signal.throwIfAborted();
-    const model = override?.model ?? ctx.model ?? runtime?.model;
+    const selectedModel = override?.model ?? ctx.model ?? runtime?.model;
+    const model = selectedModel ? withAgentUserAgent(selectedModel, runtime?.agentId) : undefined;
     if (!model) {
       // Log warning once per session when both models are missing (diagnostic for future issues).
       // Use a WeakSet to track which session managers have already logged the warning.

@@ -63,6 +63,7 @@ function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" {
 }
 
 export function buildEmbeddedExtensionFactories(params: {
+  agentId?: string;
   cfg: OpenClawConfig | undefined;
   sessionManager: SessionManager;
   provider: string;
@@ -90,6 +91,7 @@ export function buildEmbeddedExtensionFactories(params: {
       defaultTokens: DEFAULT_CONTEXT_TOKENS,
     });
     setCompactionSafeguardRuntime(params.sessionManager, {
+      agentId: params.agentId,
       abortSignal: params.abortSignal,
       timeoutMs: compactionCfg?.timeoutMs,
       conciseSummary: Boolean(compactionModelReference(compactionCfg)),
@@ -108,6 +110,7 @@ export function buildEmbeddedExtensionFactories(params: {
           ? async () => {
               const { resolveCompactionModel } = await import("../compaction-model.runtime.js");
               return resolveCompactionModel({
+                agentId: params.agentId,
                 cfg: params.cfg!,
                 provider: params.compactionProvider ?? params.provider,
                 agentDir: params.agentDir,
