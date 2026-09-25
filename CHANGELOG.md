@@ -2,6 +2,23 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.7
+
+### Changes
+
+- Sessions/storage: move large skill snapshots and system-prompt reports into immutable, content-addressed files with lazy reads, preserving exact snapshots and keeping routine index operations lightweight.
+- Sessions/maintenance: add `sessions metadata --store <path>` with preview, backed-up migration, inline rollback, and opt-in cleanup of old unreferenced metadata.
+- Sessions/archives: preserve self-contained session metadata alongside permanently archived transcripts.
+
+### Fixes
+
+- Sessions/storage: preserve nested and concurrent metadata updates, and honor field deletion after object spreads, deep clones, and JSON round trips.
+- Sessions/storage: reject missing, corrupt, oversized, or unsafe metadata references without silently replacing the original snapshots.
+
+### Upgrade notes
+
+- Stop writers and back up the complete sessions directory, including metadata files, before migrating large existing indexes. Migration previews by default; use `--apply` to persist it. Before rolling back to an older binary, use this version's `sessions metadata --store <path> --inline --apply` to restore the inline format.
+
 ## 2026.3.13-cortex.6
 
 ### Changes
