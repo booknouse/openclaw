@@ -1,3 +1,4 @@
+import { cloneSessionStore } from "./large-metadata.js";
 import type { SessionEntry } from "./types.js";
 
 type SessionStoreCacheEntry = {
@@ -57,7 +58,7 @@ export function readSessionStoreCache(params: {
     invalidateSessionStoreCache(params.storePath);
     return null;
   }
-  return structuredClone(cached.store);
+  return cloneSessionStore(cached.store, params.storePath);
 }
 
 export function writeSessionStoreCache(params: {
@@ -68,7 +69,7 @@ export function writeSessionStoreCache(params: {
   serialized?: string;
 }): void {
   SESSION_STORE_CACHE.set(params.storePath, {
-    store: structuredClone(params.store),
+    store: cloneSessionStore(params.store),
     loadedAt: Date.now(),
     storePath: params.storePath,
     mtimeMs: params.mtimeMs,

@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { healthCommand } from "../../commands/health.js";
 import { sessionsCleanupCommand } from "../../commands/sessions-cleanup.js";
+import { sessionsMetadataCommand } from "../../commands/sessions-metadata.js";
 import { sessionsCommand } from "../../commands/sessions.js";
 import { statusCommand } from "../../commands/status.js";
 import { setVerbose } from "../../globals.js";
@@ -154,6 +155,34 @@ export function registerStatusHealthSessionsCommands(program: Command) {
       );
     });
   sessionsCmd.enablePositionalOptions();
+
+  sessionsCmd
+    .command("metadata")
+    .description(
+      "Preview or migrate large session metadata (JSON output; stop writers before applying)",
+    )
+    .option("--store <path>", "Explicit session-store path")
+    .option("--apply", "Back up and apply the migration; default is preview only", false)
+    .option("--inline", "Restore inline metadata before rolling back to an older binary", false)
+    .option(
+      "--gc",
+      "Preview old unreferenced blobs; refuses removal while index backups remain",
+      false,
+    )
+    .action(async (opts, command) => {
+      const parent = command.parent?.opts() as { store?: string } | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        await sessionsMetadataCommand(
+          {
+            store: opts.store ?? parent?.store,
+            apply: opts.apply,
+            inline: opts.inline,
+            gc: opts.gc,
+          },
+          defaultRuntime,
+        );
+      });
+    });
 
   sessionsCmd
     .command("cleanup")

@@ -159,6 +159,7 @@ export async function retireIdleSessions(
               agentId: candidate.target.agentId,
               storePath,
               paths: candidate.paths,
+              entry: candidate.entry,
             });
           } catch {
             results.set(candidate.key, {
@@ -193,6 +194,7 @@ export async function retireIdleSessions(
                 current.sessionId !== entry.sessionId ||
                 current.updatedAt !== entry.updatedAt ||
                 current.sessionFile !== entry.sessionFile ||
+                JSON.stringify(current.metadataRefs) !== JSON.stringify(entry.metadataRefs) ||
                 busy(key, target, current) ||
                 aliases.some((alias) => !target.storeKeys.includes(alias)) ||
                 target.storeKeys.some(

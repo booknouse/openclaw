@@ -4,6 +4,7 @@ import type { ChatType } from "../../channels/chat-type.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.js";
 import type { TtsAutoMode } from "../types.tts.js";
+import { copySessionEntryDescriptors } from "./large-metadata.js";
 
 export type SessionScope = "per-sender" | "global";
 
@@ -183,6 +184,12 @@ export type SessionEntry = {
   lastThreadId?: string | number;
   skillsSnapshot?: SessionSkillSnapshot;
   systemPromptReport?: SessionSystemPromptReport;
+  /** Immutable, store-local blobs; large fields are loaded on first access. */
+  metadataRefs?: {
+    version: 1;
+    skillsSnapshot?: string;
+    systemPromptReport?: string;
+  };
   acp?: SessionAcpMeta;
 };
 
@@ -198,7 +205,7 @@ export function normalizeSessionRuntimeModelFields(entry: SessionEntry): Session
 
   if (!normalizedModel) {
     if (entry.model !== undefined || entry.modelProvider !== undefined) {
-      next = { ...next };
+      next = copySessionEntryDescriptors(next);
       delete next.model;
       delete next.modelProvider;
     }
@@ -207,7 +214,7 @@ export function normalizeSessionRuntimeModelFields(entry: SessionEntry): Session
 
   if (entry.model !== normalizedModel) {
     if (next === entry) {
-      next = { ...next };
+      next = copySessionEntryDescriptors(next);
     }
     next.model = normalizedModel;
   }
@@ -215,7 +222,7 @@ export function normalizeSessionRuntimeModelFields(entry: SessionEntry): Session
   if (!normalizedProvider) {
     if (entry.modelProvider !== undefined) {
       if (next === entry) {
-        next = { ...next };
+        next = copySessionEntryDescriptors(next);
       }
       delete next.modelProvider;
     }
@@ -224,7 +231,7 @@ export function normalizeSessionRuntimeModelFields(entry: SessionEntry): Session
 
   if (entry.modelProvider !== normalizedProvider) {
     if (next === entry) {
-      next = { ...next };
+      next = copySessionEntryDescriptors(next);
     }
     next.modelProvider = normalizedProvider;
   }
@@ -273,7 +280,7 @@ export function mergeSessionEntryWithPolicy(
   if (!existing) {
     return normalizeSessionRuntimeModelFields({ ...patch, sessionId, updatedAt });
   }
-  const next = { ...existing, ...patch, sessionId, updatedAt };
+  const next = copySessionEntryDescriptors(existing, patch, { sessionId, updatedAt });
 
   // Guard against stale provider carry-over when callers patch runtime model
   // without also patching runtime provider.

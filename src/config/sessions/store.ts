@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { acquireSessionWriteLock } from "../../agents/session-write-lock.js";
@@ -17,6 +18,13 @@ import {
 } from "../../utils/delivery-context.js";
 import { getFileStatSnapshot, isCacheEnabled, resolveCacheTtlMs } from "../cache-utils.js";
 import { enforceSessionDiskBudget, type SessionDiskBudgetSweepResult } from "./disk-budget.js";
+import {
+  cloneSessionStore,
+  copySessionEntryDescriptors,
+  externalizeSessionMetadata,
+  materializeSessionMetadata,
+  pruneSessionMetadata,
+} from "./large-metadata.js";
 import { deriveSessionMetaPatch } from "./metadata.js";
 import {
   clearSessionStoreCaches,
@@ -89,14 +97,13 @@ function normalizeSessionEntryDelivery(entry: SessionEntry): SessionEntry {
   if (sameDelivery && sameLast) {
     return entry;
   }
-  return {
-    ...entry,
+  return copySessionEntryDescriptors(entry, {
     deliveryContext: nextDelivery,
     lastChannel: normalized.lastChannel,
     lastTo: normalized.lastTo,
     lastAccountId: normalized.lastAccountId,
     lastThreadId: normalized.lastThreadId,
-  };
+  });
 }
 
 function removeThreadFromDeliveryContext(context?: DeliveryContext): DeliveryContext | undefined {
@@ -266,7 +273,7 @@ export function loadSessionStore(
     });
   }
 
-  return structuredClone(store);
+  return cloneSessionStore(store, storePath);
 }
 
 export function readSessionUpdatedAt(params: {
@@ -305,6 +312,8 @@ export {
 export type { ResolvedSessionMaintenanceConfig, SessionMaintenanceWarning };
 
 type SaveSessionStoreOptions = {
+  /** Explicit rollback only, before running an older binary. */
+  inlineMetadata?: boolean;
   /** Skip pruning, capping, and rotation (e.g. during one-time migrations). */
   skipMaintenance?: boolean;
   /** Active session key for warn-only maintenance. */
@@ -455,6 +464,14 @@ async function saveSessionStoreUnlocked(
   }
 
   await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
+  store = opts?.inlineMetadata
+    ? Object.fromEntries(
+        Object.entries(store).map(([key, entry]) => [
+          key,
+          materializeSessionMetadata(storePath, entry),
+        ]),
+      )
+    : await externalizeSessionMetadata(storePath, store);
   const json = JSON.stringify(store, null, 2);
   if (getSerializedSessionStore(storePath) === json) {
     updateSessionStoreWriteCaches({ storePath, store, serialized: json });
@@ -515,6 +532,59 @@ export async function saveSessionStore(
 ): Promise<void> {
   await withSessionStoreLock(storePath, async () => {
     await saveSessionStoreUnlocked(storePath, store, opts);
+  });
+}
+
+/** Explicit, reversible migration. Run with writers stopped; the lock also protects live callers. */
+export async function migrateSessionStoreMetadata(
+  storePath: string,
+  opts: { inline?: boolean; apply?: boolean } = {},
+): Promise<{ entries: number; beforeBytes: number; afterBytes: number; backup?: string }> {
+  return await withSessionStoreLock(storePath, async () => {
+    const beforeBytes = (await fs.promises.stat(storePath)).size;
+    // Do not use the loader's best-effort empty-store fallback for a migration.
+    const parsed: unknown = JSON.parse(await fs.promises.readFile(storePath, "utf8"));
+    if (!isSessionStoreRecord(parsed)) {
+      throw new Error("invalid_session_store");
+    }
+    const entries = Object.keys(parsed).length;
+    if (!opts.apply) {
+      return { entries, beforeBytes, afterBytes: beforeBytes };
+    }
+    // Materialize before touching disk: a missing/corrupt blob makes rollback fail closed.
+    const store = opts.inline
+      ? Object.fromEntries(
+          Object.entries(parsed).map(([key, entry]) => [
+            key,
+            materializeSessionMetadata(storePath, entry),
+          ]),
+        )
+      : parsed;
+    const backup = `${storePath}.metadata-backup-${Date.now()}-${crypto.randomUUID()}`;
+    await fs.promises.copyFile(storePath, backup, fs.constants.COPYFILE_EXCL);
+    await fs.promises.chmod(backup, 0o600);
+    const handle = await fs.promises.open(backup, "r");
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await saveSessionStoreUnlocked(storePath, store, {
+      skipMaintenance: true,
+      inlineMetadata: opts.inline,
+    });
+    return { entries, beforeBytes, afterBytes: (await fs.promises.stat(storePath)).size, backup };
+  });
+}
+
+/** Maintenance command only; normal requests never sweep or remove metadata blobs. */
+export async function cleanupSessionStoreMetadata(storePath: string, apply = false) {
+  return await withSessionStoreLock(storePath, async () => {
+    const parsed: unknown = JSON.parse(await fs.promises.readFile(storePath, "utf8"));
+    if (!isSessionStoreRecord(parsed)) {
+      throw new Error("invalid_session_store");
+    }
+    return await pruneSessionMetadata(storePath, parsed, apply);
   });
 }
 

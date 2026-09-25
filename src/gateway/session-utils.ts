@@ -24,6 +24,7 @@ import {
   type SessionStoreTarget,
   type SessionScope,
 } from "../config/sessions.js";
+import { copySessionEntryDescriptors } from "../config/sessions/large-metadata.js";
 import { openBoundaryFileSync } from "../infra/boundary-file-read.js";
 import {
   normalizeAgentId,
@@ -683,21 +684,17 @@ function mergeSessionEntryIntoCombined(params: {
   const existing = combined[canonicalKey];
 
   if (existing && (existing.updatedAt ?? 0) > (entry.updatedAt ?? 0)) {
-    combined[canonicalKey] = {
-      ...entry,
-      ...existing,
+    combined[canonicalKey] = copySessionEntryDescriptors(entry, existing, {
       spawnedBy: canonicalizeSpawnedByForAgent(cfg, agentId, existing.spawnedBy ?? entry.spawnedBy),
-    };
+    });
   } else {
-    combined[canonicalKey] = {
-      ...existing,
-      ...entry,
+    combined[canonicalKey] = copySessionEntryDescriptors(existing, entry, {
       spawnedBy: canonicalizeSpawnedByForAgent(
         cfg,
         agentId,
         entry.spawnedBy ?? existing?.spawnedBy,
       ),
-    };
+    });
   }
 }
 

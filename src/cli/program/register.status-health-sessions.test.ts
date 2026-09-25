@@ -5,6 +5,7 @@ const statusCommand = vi.fn();
 const healthCommand = vi.fn();
 const sessionsCommand = vi.fn();
 const sessionsCleanupCommand = vi.fn();
+const sessionsMetadataCommand = vi.fn();
 const setVerbose = vi.fn();
 
 const runtime = {
@@ -28,6 +29,7 @@ vi.mock("../../commands/sessions.js", () => ({
 vi.mock("../../commands/sessions-cleanup.js", () => ({
   sessionsCleanupCommand,
 }));
+vi.mock("../../commands/sessions-metadata.js", () => ({ sessionsMetadataCommand }));
 
 vi.mock("../../globals.js", () => ({
   setVerbose,
@@ -56,6 +58,27 @@ describe("registerStatusHealthSessionsCommands", () => {
     healthCommand.mockResolvedValue(undefined);
     sessionsCommand.mockResolvedValue(undefined);
     sessionsCleanupCommand.mockResolvedValue(undefined);
+    sessionsMetadataCommand.mockResolvedValue(undefined);
+  });
+
+  it("previews metadata by default and forwards an explicit rollback request", async () => {
+    await runCli(["sessions", "metadata", "--store", "/tmp/test-sessions.json"]);
+    expect(sessionsMetadataCommand).toHaveBeenCalledWith(
+      { store: "/tmp/test-sessions.json", apply: false, inline: false, gc: false },
+      runtime,
+    );
+    await runCli([
+      "sessions",
+      "--store",
+      "/tmp/test-sessions.json",
+      "metadata",
+      "--inline",
+      "--apply",
+    ]);
+    expect(sessionsMetadataCommand).toHaveBeenLastCalledWith(
+      { store: "/tmp/test-sessions.json", apply: true, inline: true, gc: false },
+      runtime,
+    );
   });
 
   it("runs status command with timeout and debug-derived verbose", async () => {

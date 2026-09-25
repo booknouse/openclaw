@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
+import { materializeSessionMetadata } from "../config/sessions/large-metadata.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 
 type ArchivedFile = {
   source: string;
@@ -88,6 +90,7 @@ export async function preparePermanentSessionArchive(params: {
   agentId: string;
   storePath: string;
   paths: string[];
+  entry?: SessionEntry;
 }): Promise<PermanentSessionArchive> {
   const existing: { source: string; stat: Stats }[] = [];
   for (const source of new Set(params.paths)) {
@@ -129,6 +132,20 @@ export async function preparePermanentSessionArchive(params: {
       dev: stat.dev,
     });
   }
+  // Keep exact skill/prompt snapshots with the archive, independent of live blobs and indexes.
+  const metadata = params.entry ? "session-metadata.json" : undefined;
+  if (metadata) {
+    const file = path.join(directory, metadata);
+    await fs.writeFile(
+      file,
+      JSON.stringify(materializeSessionMetadata(params.storePath, params.entry!)),
+      {
+        flag: "wx",
+        mode: 0o600,
+      },
+    );
+    await syncFile(file);
+  }
   const manifest = path.join(directory, "manifest.json");
   await fs.writeFile(
     manifest,
@@ -142,6 +159,7 @@ export async function preparePermanentSessionArchive(params: {
         storePath: params.storePath,
         // Snapshots can remain when a later index update is skipped or fails; they are never purged.
         kind: "runtime-snapshot",
+        ...(metadata ? { metadata } : {}),
         files,
       },
       null,
