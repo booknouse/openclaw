@@ -1787,6 +1787,7 @@ export async function runEmbeddedAttempt(
       });
       applyPiAutoCompactionGuard({
         settingsManager,
+        abortSignal: runAbortController.signal,
         contextEngineInfo: params.contextEngine?.info,
         backgroundCompaction:
           params.trigger === "memory" || backgroundCompactionEnabled(params.config),
@@ -1796,6 +1797,7 @@ export async function runEmbeddedAttempt(
       // that must be passed to the resource loader for the safeguard to be active.
       const extensionFactories = buildEmbeddedExtensionFactories({
         agentId: sessionAgentId,
+        runId: params.runId,
         abortSignal: runAbortController.signal,
         cfg: params.config,
         sessionManager,

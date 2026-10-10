@@ -1,5 +1,7 @@
+import { SettingsManager } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyPiAutoCompactionGuard,
   applyPiCompactionSettingsFromConfig,
   DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR,
   resolveCompactionReserveTokensFloor,
@@ -138,5 +140,37 @@ describe("resolveCompactionReserveTokensFloor", () => {
         agents: { defaults: { compaction: { reserveTokensFloor: 0 } } },
       }),
     ).toBe(0);
+  });
+});
+
+describe("aborted run auto-compaction guard", () => {
+  it.each(["sessions_yield", "user_abort"])("disables only the aborted attempt (%s)", (reason) => {
+    const controller = new AbortController();
+    const settingsManager = SettingsManager.inMemory({
+      compaction: { enabled: true, reserveTokens: 1024 },
+    });
+    const persist = vi.spyOn(settingsManager, "setCompactionEnabled");
+    applyPiAutoCompactionGuard({ settingsManager, abortSignal: controller.signal });
+    expect(settingsManager.getCompactionSettings().enabled).toBe(true);
+    controller.abort(reason);
+    expect(settingsManager.getCompactionSettings()).toMatchObject({
+      enabled: false,
+      reserveTokens: 1024,
+    });
+    expect(persist).not.toHaveBeenCalled();
+    const next = SettingsManager.inMemory({ compaction: { enabled: true } });
+    applyPiAutoCompactionGuard({
+      settingsManager: next,
+      abortSignal: new AbortController().signal,
+    });
+    expect(next.getCompactionSettings().enabled).toBe(true);
+  });
+
+  it("also guards a signal that was aborted before installation", () => {
+    const controller = new AbortController();
+    controller.abort("sessions_yield");
+    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: true } });
+    applyPiAutoCompactionGuard({ settingsManager, abortSignal: controller.signal });
+    expect(settingsManager.getCompactionSettings().enabled).toBe(false);
   });
 });

@@ -1031,21 +1031,63 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         },
       };
     } catch (error) {
-      log.warn(
-        `Compaction summarization failed; cancelling compaction to preserve history: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      if (!signal.aborted) {
+        log.warn(
+          `Compaction summarization failed; cancelling compaction to preserve history: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       throw error;
     }
   };
   api.on("session_before_compact", async (event, ctx) => {
     const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
     const callerSignal = runtime?.abortSignal;
+    const startedAt = Date.now();
+    const logCancellation = (error?: unknown) => {
+      const abortedSignal = callerSignal?.aborted
+        ? callerSignal
+        : event.signal.aborted
+          ? event.signal
+          : undefined;
+      const reason = abortedSignal
+        ? abortedSignal.reason === "sessions_yield"
+          ? "sessions_yield"
+          : abortedSignal.reason instanceof Error && abortedSignal.reason.name === "TimeoutError"
+            ? "run_timeout"
+            : "aborted"
+        : error instanceof CompactionTimeoutError
+          ? "deadline"
+          : "summary_error";
+      const detail = {
+        reason,
+        sessionId: ctx.sessionManager.getSessionId?.() ?? "unknown",
+        runId: runtime?.runId ?? "unknown",
+        elapsedMs: Date.now() - startedAt,
+        abortSource:
+          abortedSignal === callerSignal && abortedSignal
+            ? "run"
+            : abortedSignal
+              ? "compaction"
+              : "none",
+      };
+      if (reason === "sessions_yield" || reason === "aborted") {
+        log.info("Compaction cancelled", detail);
+      } else {
+        log.warn("Compaction failed", detail);
+      }
+    };
     if (runtime) {
       runtime.failure = undefined;
     }
     const file = ctx.sessionManager.getSessionFile?.();
+    // Manual compaction and a cancellation racing the SDK guard must also avoid
+    // model resolution/queueing once their caller has already stopped.
+    if (event.signal.aborted || callerSignal?.aborted) {
+      logCancellation();
+      return { cancel: true };
+    }
     try {
       const parent = callerSignal ? AbortSignal.any([event.signal, callerSignal]) : event.signal;
       const result = await withCompactionDeadline(
@@ -1070,7 +1112,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
         recordNativeCompactionResult(file, false);
       }
-      log.warn("Compaction cancelled: deadline, abort, or configured model unavailable.");
+      logCancellation(error);
       return { cancel: true };
     }
   });

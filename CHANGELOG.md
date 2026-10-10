@@ -2,6 +2,13 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.8
+
+### Fixes
+
+- Agents/compaction: skip post-turn auto-compaction after `sessions_yield` or caller cancellation without disabling compaction for subsequent turns or changing persistent settings.
+- Agents/compaction: distinguish yield, cancellation, run timeout, compaction deadline, and summary failures in logs with session/run identifiers and elapsed time; preserve cancellation, history protection, and recovery after failure.
+
 ## 2026.3.13-cortex.7
 
 ### Changes

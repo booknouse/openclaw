@@ -5,6 +5,7 @@ import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-r
 
 export type CompactionSafeguardRuntimeValue = {
   agentId?: string;
+  runId?: string;
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   failure?: { code: string; message: string };

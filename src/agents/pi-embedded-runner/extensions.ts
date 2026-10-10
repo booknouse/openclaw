@@ -64,6 +64,7 @@ function resolveCompactionMode(cfg?: OpenClawConfig): "default" | "safeguard" {
 
 export function buildEmbeddedExtensionFactories(params: {
   agentId?: string;
+  runId?: string;
   cfg: OpenClawConfig | undefined;
   sessionManager: SessionManager;
   provider: string;
@@ -92,6 +93,7 @@ export function buildEmbeddedExtensionFactories(params: {
     });
     setCompactionSafeguardRuntime(params.sessionManager, {
       agentId: params.agentId,
+      runId: params.runId,
       abortSignal: params.abortSignal,
       timeoutMs: compactionCfg?.timeoutMs,
       conciseSummary: Boolean(compactionModelReference(compactionCfg)),

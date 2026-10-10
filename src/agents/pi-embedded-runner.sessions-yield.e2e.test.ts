@@ -39,6 +39,7 @@ function createMockUsage(input: number, output: number) {
 
 let streamCallCount = 0;
 let multiToolMode = false;
+let yieldInputTokens = 1;
 let responsePlan: Array<"toolUse" | "stop"> = [];
 let observedContexts: Array<Array<{ role?: string; content?: unknown }>> = [];
 
@@ -80,7 +81,7 @@ vi.mock("@mariozechner/pi-ai", async () => {
       api: model.api,
       provider: model.provider,
       model: model.id,
-      usage: createMockUsage(1, 1),
+      usage: createMockUsage(yieldInputTokens, 1),
       timestamp: Date.now(),
     };
   };
@@ -343,3 +344,51 @@ describe("sessions_yield e2e", () => {
     },
   );
 });
+
+it("does not start threshold compaction after yielding a high-context turn", async () => {
+  const sessionId = "yield-high-context";
+  const sessionFile = path.join(workspaceDir, "yield-high-context.jsonl");
+  const cfg = createEmbeddedPiRunnerOpenAiConfig(["mock-yield"]);
+  cfg.agents = {
+    defaults: {
+      compaction: {
+        mode: "safeguard",
+        reserveTokensFloor: 0,
+        reserveTokens: 1024,
+        keepRecentTokens: 512,
+      },
+    },
+  };
+  const events: Array<{ stream: string }> = [];
+  streamCallCount = 0;
+  responsePlan = ["toolUse"];
+  yieldInputTokens = 15_500;
+  try {
+    const result = await runEmbeddedPiAgent({
+      sessionId,
+      sessionKey: "agent:test:yield-high-context",
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "Delegate this task and yield.",
+      provider: "openai",
+      model: "mock-yield",
+      timeoutMs: 10_000,
+      agentDir,
+      runId: "yield-high-context-run",
+      enqueue: immediateEnqueue,
+      onAgentEvent: (event) => {
+        events.push(event);
+      },
+    });
+    expect(result.meta.stopReason).toBe("end_turn");
+    expect(streamCallCount).toBe(1);
+    expect(events.filter((event) => event.stream === "compaction")).toEqual([]);
+    expect(
+      (await readSessionEntries(sessionFile)).some((entry) => entry.type === "compaction"),
+    ).toBe(false);
+    expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
+  } finally {
+    yieldInputTokens = 1;
+  }
+}, 30_000);

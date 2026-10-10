@@ -14,6 +14,19 @@ vi.mock("../compaction.js", async (original) => ({
   ...(await original<typeof compaction>()),
   summarizeInStages: vi.fn(),
 }));
+const logs = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock("../../logging/subsystem.js", async (original) => {
+  const actual = await original<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (name: string) => {
+      const logger = actual.createSubsystemLogger(name);
+      return name === "compaction-safeguard"
+        ? { ...logger, info: logs.info, warn: logs.warn }
+        : logger;
+    },
+  };
+});
 const summarize = vi.mocked(compaction.summarizeInStages);
 const dialogue = {
   id: "dialogue",
@@ -36,7 +49,9 @@ function fixture() {
       handler = fn;
     },
   } as unknown as ExtensionAPI);
-  const sessionManager = {} as ExtensionContext["sessionManager"];
+  const sessionManager = {
+    getSessionId: () => "summary-session",
+  } as ExtensionContext["sessionManager"];
   const ctx = {
     model: dialogue,
     sessionManager,
@@ -119,6 +134,10 @@ describe("automatic compaction model override", () => {
     expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure).toMatchObject({
       code: "compaction_timeout",
     });
+    expect(logs.warn).toHaveBeenCalledWith(
+      "Compaction failed",
+      expect.objectContaining({ reason: "deadline", elapsedMs: 1000 }),
+    );
   });
 
   it("installs the override for automatic compaction even when mode is default", () => {
@@ -188,6 +207,12 @@ describe("automatic compaction model override", () => {
     controller.abort();
     await expect(task).resolves.toEqual({ cancel: true });
     expect(providerSignal?.aborted).toBe(true);
+    expect(logs.info).toHaveBeenCalledWith(
+      "Compaction cancelled",
+      expect.objectContaining({ reason: "aborted", abortSource: "run" }),
+    );
+    expect(logs.warn).not.toHaveBeenCalled();
+    expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure).toBeUndefined();
   });
 });
 
@@ -248,4 +273,86 @@ it("does not classify user cancellation as a native compaction failure", async (
   });
   await expect(f.handler(f.event, f.ctx)).resolves.toEqual({ cancel: true });
   expect(getNativeCompactionFailure(file)).toBeUndefined();
+});
+
+it("skips a yielded caller before model resolution and keeps the next attempt usable", async () => {
+  const f = fixture();
+  const controller = new AbortController();
+  controller.abort("sessions_yield");
+  const resolveModel = vi.fn().mockResolvedValue({ model: dedicated, apiKey: "summary-key" });
+  setCompactionSafeguardRuntime(f.sessionManager, {
+    runId: "yield-run",
+    abortSignal: controller.signal,
+    resolveModel,
+  });
+  await expect(f.handler(f.event, f.ctx)).resolves.toEqual({ cancel: true });
+  expect(resolveModel).not.toHaveBeenCalled();
+  expect(summarize).not.toHaveBeenCalled();
+  expect(logs.warn).not.toHaveBeenCalled();
+  expect(logs.info).toHaveBeenCalledWith(
+    "Compaction cancelled",
+    expect.objectContaining({
+      reason: "sessions_yield",
+      sessionId: "summary-session",
+      runId: "yield-run",
+      elapsedMs: expect.any(Number),
+      abortSource: "run",
+    }),
+  );
+  setCompactionSafeguardRuntime(f.sessionManager, {
+    runId: "next-run",
+    abortSignal: new AbortController().signal,
+    resolveModel,
+    recentTurnsPreserve: 0,
+  });
+  summarize.mockResolvedValue("summary after yield");
+  await expect(f.handler(f.event, f.ctx)).resolves.toMatchObject({
+    compaction: { summary: expect.stringContaining("summary after yield") },
+  });
+  expect(resolveModel).toHaveBeenCalledTimes(1);
+  expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure).toBeUndefined();
+});
+
+it("distinguishes a run timeout from a compaction deadline", async () => {
+  const f = fixture();
+  const controller = new AbortController();
+  controller.abort(new DOMException("run timed out", "TimeoutError"));
+  setCompactionSafeguardRuntime(f.sessionManager, {
+    runId: "timed-out-run",
+    abortSignal: controller.signal,
+  });
+  await expect(f.handler(f.event, f.ctx)).resolves.toEqual({ cancel: true });
+  expect(summarize).not.toHaveBeenCalled();
+  expect(logs.warn).toHaveBeenCalledWith(
+    "Compaction failed",
+    expect.objectContaining({ reason: "run_timeout", abortSource: "run" }),
+  );
+});
+
+it("records summary failures with identity and recovers on a later successful attempt", async () => {
+  const f = fixture();
+  const resolveModel = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("unavailable"))
+    .mockResolvedValue({ model: dedicated, apiKey: "summary-key" });
+  setCompactionSafeguardRuntime(f.sessionManager, {
+    runId: "summary-run",
+    resolveModel,
+    recentTurnsPreserve: 0,
+  });
+  await expect(f.handler(f.event, f.ctx)).resolves.toEqual({ cancel: true });
+  expect(logs.warn).toHaveBeenCalledWith(
+    "Compaction failed",
+    expect.objectContaining({
+      reason: "summary_error",
+      sessionId: "summary-session",
+      runId: "summary-run",
+    }),
+  );
+  expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure?.code).toBe("compaction_failed");
+  summarize.mockResolvedValue("recovered summary");
+  await expect(f.handler(f.event, f.ctx)).resolves.toMatchObject({
+    compaction: { summary: expect.stringContaining("recovered summary") },
+  });
+  expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure).toBeUndefined();
 });

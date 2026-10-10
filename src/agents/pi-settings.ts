@@ -8,6 +8,7 @@ type PiSettingsManagerLike = {
   getCompactionKeepRecentTokens: () => number;
   applyOverrides: (overrides: {
     compaction: {
+      enabled?: boolean;
       reserveTokens?: number;
       keepRecentTokens?: number;
     };
@@ -109,9 +110,22 @@ export function shouldDisablePiAutoCompaction(params: {
 /** Disable Pi auto-compaction via settings when a context engine owns compaction. */
 export function applyPiAutoCompactionGuard(params: {
   settingsManager: PiSettingsManagerLike;
+  abortSignal?: AbortSignal;
   contextEngineInfo?: ContextEngineInfo;
   backgroundCompaction?: boolean;
 }): { supported: boolean; disabled: boolean } {
+  // Pi checks compaction after agent_end, including a tool-driven sessions_yield.
+  // Keep cancellation local to this SettingsManager: persistent setters would
+  // disable compaction for the next attempt, including trusted project settings.
+  if (params.abortSignal) {
+    const disableAfterAbort = () =>
+      params.settingsManager.applyOverrides({ compaction: { enabled: false } });
+    if (params.abortSignal.aborted) {
+      disableAfterAbort();
+    } else {
+      params.abortSignal.addEventListener("abort", disableAfterAbort, { once: true });
+    }
+  }
   const disable = shouldDisablePiAutoCompaction({
     contextEngineInfo: params.contextEngineInfo,
     backgroundCompaction: params.backgroundCompaction,
