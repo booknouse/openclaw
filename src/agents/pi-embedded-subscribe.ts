@@ -131,6 +131,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     state.lastStreamedAssistantCleaned = undefined;
     state.emittedAssistantUpdate = false;
     state.lastBlockReplyText = undefined;
+    state.lastCompletedAssistantText = undefined;
     state.lastStreamedReasoning = undefined;
     state.lastReasoningSent = undefined;
     state.reasoningStreamOpen = false;
@@ -486,7 +487,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     if (!chunk) {
       return;
     }
-    if (chunk === state.lastBlockReplyText) {
+    // Each chunker emission consumes a distinct source range. Equal adjacent
+    // chunks are valid content, not duplicated provider events.
+    if (!blockChunker && chunk === state.lastBlockReplyText) {
       return;
     }
 
@@ -498,7 +501,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       return;
     }
 
-    if (shouldSkipAssistantText(chunk)) {
+    if (!blockChunker && shouldSkipAssistantText(chunk)) {
       return;
     }
 

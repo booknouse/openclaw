@@ -5,6 +5,7 @@ import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cancelBackgroundCompaction,
+  getBackgroundCompactionJob,
   getBackgroundCompactionStatus,
 } from "./background-compaction-state.js";
 import {
@@ -228,6 +229,41 @@ it("does not silently discard oversized protected constraints", () => {
   expect(() =>
     collectProtectedContext([{ role: "user", content: "必须" + "x".repeat(25000), timestamp: 0 }]),
   ).toThrow("protected_context_too_large");
+});
+
+it("does not reschedule the same protected-context failure or call the background provider", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "protected-background-"));
+  const manager = SessionManager.create(dir, dir);
+  const file = manager.getSessionFile()!;
+  try {
+    manager.appendMessage({ role: "user", content: "必须" + "x".repeat(26000), timestamp: 0 });
+    manager.appendMessage({ role: "user", content: "latest request", timestamp: 1 });
+    const params: BackgroundCompactionParams = {
+      sessionId: manager.getSessionId(),
+      sessionFile: file,
+      sessionManager: manager,
+      tokenBudget: 1000,
+      agentDir: dir,
+      provider: "test",
+      config: {
+        agents: {
+          defaults: {
+            compaction: { keepRecentTokens: 128, background: { enabled: true, triggerRatio: 0.7 } },
+          },
+        },
+      },
+    };
+    summarize.mockClear();
+    expect(scheduleBackgroundCompaction(params)).toBe(false);
+    const failed = getBackgroundCompactionJob(file);
+    expect(failed).toMatchObject({ state: "failed", reason: "protected_context_too_large" });
+    expect(scheduleBackgroundCompaction(params)).toBe(false);
+    expect(getBackgroundCompactionJob(file)).toBe(failed);
+    expect(summarize).not.toHaveBeenCalled();
+  } finally {
+    cancelBackgroundCompaction(file);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 it("does not let stale imported usage undercut current history size", () => {

@@ -97,6 +97,7 @@ import {
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
+import { resolveToolFsConfig } from "../../tool-fs-policy.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../../tool-fs-policy.js";
 import { normalizeToolName } from "../../tool-policy.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
@@ -1768,6 +1769,11 @@ export async function runEmbeddedAttempt(
 
       if (!params.contextEngine?.info.ownsCompaction) {
         backgroundCompactionCommitted = commitReadyBackgroundCompaction({
+          protectedEvidenceReadable:
+            !sandbox?.enabled &&
+            tools.some((tool) => tool.name === "read") &&
+            !resolveToolFsConfig({ cfg: params.config, agentId: sessionAgentId }).workspaceOnly &&
+            params.trigger !== "memory",
           config: params.config,
           sessionId: params.sessionId,
           sessionFile: params.sessionFile,
@@ -1796,6 +1802,11 @@ export async function runEmbeddedAttempt(
       // Sets compaction/pruning runtime state and returns extension factories
       // that must be passed to the resource loader for the safeguard to be active.
       const extensionFactories = buildEmbeddedExtensionFactories({
+        protectedEvidenceReadable:
+          !sandbox?.enabled &&
+          tools.some((tool) => tool.name === "read") &&
+          !resolveToolFsConfig({ cfg: params.config, agentId: sessionAgentId }).workspaceOnly &&
+          params.trigger !== "memory",
         agentId: sessionAgentId,
         runId: params.runId,
         abortSignal: runAbortController.signal,
@@ -2250,6 +2261,7 @@ export async function runEmbeddedAttempt(
         onPartialReply: params.onPartialReply,
         onAssistantMessageStart: params.onAssistantMessageStart,
         onAgentEvent: params.onAgentEvent,
+        onCompactionBlocked: (failure) => abortRun(false, new Error(failure.message)),
         enforceFinalTag: params.enforceFinalTag,
         config: params.config,
         sessionKey: sandboxSessionKey,
@@ -2664,6 +2676,11 @@ export async function runEmbeddedAttempt(
           !params.contextEngine?.info.ownsCompaction
         ) {
           scheduleBackgroundCompaction({
+            protectedEvidenceReadable:
+              !sandbox?.enabled &&
+              tools.some((tool) => tool.name === "read") &&
+              !resolveToolFsConfig({ cfg: params.config, agentId: sessionAgentId }).workspaceOnly &&
+              params.trigger !== "memory",
             config: params.config,
             sessionId: sessionIdUsed,
             sessionFile: params.sessionFile,

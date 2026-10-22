@@ -26,6 +26,7 @@ export type BackgroundCompactionJob = BackgroundCompactionStatus & {
   summary?: string;
   model?: string;
   protectedContext?: string;
+  protectionFingerprint?: string;
   timer?: ReturnType<typeof setTimeout>;
 };
 

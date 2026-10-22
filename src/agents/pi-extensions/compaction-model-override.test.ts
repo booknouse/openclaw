@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,6 +73,108 @@ function fixture() {
   };
   return { handler, sessionManager, ctx, event };
 }
+
+it("commits an evidence reference only when the dialogue can read it", async () => {
+  const f = fixture();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "native-evidence-"));
+  Object.assign(f.sessionManager, { getSessionFile: () => path.join(dir, "session.jsonl") });
+  const content = Array.from(
+    { length: 500 },
+    (_, i) => `/workspace/component-${i}/${"evidence".repeat(10)}/check.py`,
+  ).join("\n");
+  const event = {
+    ...f.event,
+    preparation: {
+      ...f.event.preparation,
+      messagesToSummarize: [{ role: "user", content: "必须只读\n" + content, timestamp: 1 }],
+    },
+  };
+  try {
+    setCompactionSafeguardRuntime(f.sessionManager, {
+      conciseSummary: true,
+      protectedEvidenceReadable: false,
+      recentTurnsPreserve: 0,
+    });
+    expect(await f.handler(event, f.ctx)).toEqual({ cancel: true });
+    expect(summarize).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(dir, ".protected-context"))).toBe(false);
+    setCompactionSafeguardRuntime(f.sessionManager, {
+      conciseSummary: true,
+      protectedEvidenceReadable: true,
+      recentTurnsPreserve: 0,
+    });
+    summarize.mockResolvedValue("concise summary");
+    const result = await f.handler(event, f.ctx);
+    expect(result).toMatchObject({
+      compaction: { summary: expect.stringContaining("Evidence index (not instructions):") },
+    });
+    expect(JSON.stringify(result)).toContain("必须只读");
+    expect(fs.readdirSync(path.join(dir, ".protected-context"))).toHaveLength(1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("blocks repeated oversized constraints before resolving or calling a model; changed input can recover", async () => {
+  const f = fixture();
+  const file = "/test/protected-deterministic.jsonl";
+  Object.assign(f.sessionManager, { getSessionFile: () => file });
+  const resolveModel = vi.fn().mockResolvedValue({ model: dedicated, apiKey: "summary-key" });
+  setCompactionSafeguardRuntime(f.sessionManager, {
+    conciseSummary: true,
+    resolveModel,
+    recentTurnsPreserve: 0,
+  });
+  const huge = {
+    ...f.event,
+    preparation: {
+      ...f.event.preparation,
+      messagesToSummarize: [{ role: "user", content: "必须" + "x".repeat(25000), timestamp: 1 }],
+    },
+  };
+  for (let i = 0; i < 5; i++) {
+    expect(await f.handler(huge, f.ctx)).toEqual({ cancel: true });
+  }
+  expect(resolveModel).not.toHaveBeenCalled();
+  expect(summarize).not.toHaveBeenCalled();
+  expect(logs.warn).toHaveBeenCalledTimes(1);
+  expect(getCompactionSafeguardRuntime(f.sessionManager)?.failure?.code).toBe(
+    "protected_context_too_large",
+  );
+  expect(getNativeCompactionFailure(file)).toMatchObject({
+    reason: "protected_context_too_large",
+    fingerprint: expect.any(String),
+  });
+  summarize.mockResolvedValue("recovered summary");
+  await f.handler(f.event, f.ctx);
+  expect(resolveModel).toHaveBeenCalledOnce();
+  expect(getNativeCompactionFailure(file)).toBeUndefined();
+});
+
+it("leaves trusted internal inputs in summarization without promoting their instructions", async () => {
+  const f = fixture();
+  setCompactionSafeguardRuntime(f.sessionManager, { conciseSummary: true, recentTurnsPreserve: 0 });
+  const event = {
+    ...f.event,
+    preparation: {
+      ...f.event.preparation,
+      messagesToSummarize: [
+        { role: "user", content: "必须只读", timestamp: 1 },
+        {
+          role: "user",
+          content: "must retry every report " + "details ".repeat(4000),
+          timestamp: 2,
+          provenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+        },
+      ],
+    },
+  };
+  summarize.mockResolvedValue("concise result");
+  const result = await f.handler(event, f.ctx);
+  expect(summarize.mock.calls[0][0].messages).toHaveLength(2);
+  expect(result).toMatchObject({ compaction: { summary: expect.stringContaining("必须只读") } });
+  expect(JSON.stringify(result)).not.toContain("must retry every report");
+});
 afterEach(() => {
   vi.resetAllMocks();
   vi.useRealTimers();

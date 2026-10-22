@@ -11,7 +11,6 @@ import { extractSections } from "../../auto-reply/reply/post-compaction-context.
 import { openBoundaryFile } from "../../infra/boundary-file-read.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { extractKeywords, isQueryStopWordToken } from "../../memory/query-expansion.js";
-import { collectProtectedContext } from "../background-compaction.js";
 import { CompactionTimeoutError, withCompactionDeadline } from "../compaction-budget.js";
 import { compactionSummaryFits } from "../compaction-summary.js";
 import {
@@ -29,7 +28,11 @@ import {
 } from "../compaction.js";
 import { collectTextContentBlocks } from "../content-blocks.js";
 import { withAgentUserAgent } from "../model-user-agent.js";
-import { recordNativeCompactionResult } from "../native-compaction-state.js";
+import {
+  getNativeCompactionFailure,
+  recordNativeCompactionResult,
+} from "../native-compaction-state.js";
+import { collectProtectedContext, ProtectedContextError } from "../protected-context.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
 import { extractToolCallsFromAssistant, extractToolResultId } from "../tool-call-id.js";
@@ -710,7 +713,11 @@ async function readWorkspaceContextForSummary(): Promise<string> {
 }
 
 export default function compactionSafeguardExtension(api: ExtensionAPI): void {
-  const compact = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext) => {
+  const compact = async (
+    event: SessionBeforeCompactEvent,
+    ctx: ExtensionContext,
+    protectedContext: string,
+  ) => {
     const { preparation, customInstructions: eventInstructions, signal } = event;
     if (!preparation.messagesToSummarize.some(isRealConversationMessage)) {
       log.warn(
@@ -774,13 +781,6 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         modelContextWindow,
       );
       const turnPrefixMessages = preparation.turnPrefixMessages ?? [];
-      const protectedContext =
-        runtime?.conciseSummary && identifierPolicy === "strict"
-          ? collectProtectedContext(
-              [...preparation.messagesToSummarize, ...turnPrefixMessages],
-              preparation.previousSummary,
-            )
-          : "";
       let messagesToSummarize = preparation.messagesToSummarize;
       const recentTurnsPreserve = resolveRecentTurnsPreserve(runtime?.recentTurnsPreserve);
       const qualityGuardEnabled = runtime?.qualityGuardEnabled ?? false;
@@ -1092,7 +1092,24 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       const parent = callerSignal ? AbortSignal.any([event.signal, callerSignal]) : event.signal;
       const result = await withCompactionDeadline(
         parent,
-        (signal) => compact({ ...event, signal }, ctx),
+        (signal) => {
+          signal.throwIfAborted();
+          // Deterministic protection failures must stop before model resolution,
+          // credentials, or a provider slot are acquired.
+          const protectedContext =
+            runtime?.conciseSummary && (runtime.identifierPolicy ?? "strict") === "strict"
+              ? collectProtectedContext(
+                  [
+                    ...event.preparation.messagesToSummarize,
+                    ...(event.preparation.turnPrefixMessages ?? []),
+                  ],
+                  event.preparation.previousSummary,
+                  { sessionFile: runtime.protectedEvidenceReadable ? file : undefined },
+                )
+              : "";
+          signal.throwIfAborted();
+          return compact({ ...event, signal }, ctx, protectedContext);
+        },
         runtime?.timeoutMs,
       );
       if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
@@ -1102,17 +1119,36 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     } catch (error) {
       if (runtime && !event.signal.aborted && !callerSignal?.aborted) {
         runtime.failure =
-          error instanceof CompactionTimeoutError
-            ? { code: "compaction_timeout", message: error.message }
-            : {
-                code: "compaction_failed",
-                message: "Context compaction failed; history preserved.",
-              };
+          error instanceof ProtectedContextError
+            ? { code: error.code, message: error.message }
+            : error instanceof CompactionTimeoutError
+              ? { code: "compaction_timeout", message: error.message }
+              : {
+                  code: "compaction_failed",
+                  message: "Context compaction failed; history preserved.",
+                };
       }
+      const protectionFailure = error instanceof ProtectedContextError ? error : undefined;
+      const prior = file ? getNativeCompactionFailure(file) : undefined;
+      const repeated =
+        protectionFailure &&
+        prior?.reason === protectionFailure.code &&
+        prior.fingerprint === protectionFailure.fingerprint;
       if (runtime?.conciseSummary && file && !event.signal.aborted && !callerSignal?.aborted) {
-        recordNativeCompactionResult(file, false);
+        recordNativeCompactionResult(
+          file,
+          false,
+          protectionFailure
+            ? {
+                reason: protectionFailure.code,
+                fingerprint: protectionFailure.fingerprint,
+              }
+            : undefined,
+        );
       }
-      logCancellation(error);
+      if (!repeated) {
+        logCancellation(error);
+      }
       return { cancel: true };
     }
   });

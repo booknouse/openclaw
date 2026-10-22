@@ -129,6 +129,11 @@ export function handleMessageUpdate(
   if (evtType !== "text_delta" && evtType !== "text_start" && evtType !== "text_end") {
     return;
   }
+  // The message_end snapshot is authoritative. A late text_end belongs to that
+  // completed message; only message_start opens a new message/source range.
+  if (evtType === "text_end" && ctx.state.lastCompletedAssistantText !== undefined) {
+    return;
+  }
 
   const delta = typeof assistantRecord?.delta === "string" ? assistantRecord.delta : "";
   const content = typeof assistantRecord?.content === "string" ? assistantRecord.content : "";
@@ -270,6 +275,9 @@ export function handleMessageEnd(
   promoteThinkingTagsToBlocks(assistantMessage);
 
   const rawText = extractAssistantText(assistantMessage);
+  if (ctx.state.lastCompletedAssistantText === rawText.trimEnd()) {
+    return;
+  }
   appendRawStream({
     ts: Date.now(),
     event: "assistant_message_end",
@@ -428,6 +436,7 @@ export function handleMessageEnd(
     emitSplitResultAsBlockReply(ctx.consumeReplyDirectives("", { final: true }));
   }
 
+  ctx.state.lastCompletedAssistantText = rawText.trimEnd();
   ctx.state.deltaBuffer = "";
   ctx.state.blockBuffer = "";
   ctx.blockChunker?.reset();

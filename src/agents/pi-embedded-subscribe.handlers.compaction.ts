@@ -56,6 +56,11 @@ export function handleAutoCompactionEnd(
   const hasResult = evt.result != null;
   const wasAborted = Boolean(evt.aborted);
   const failure = getCompactionSafeguardRuntime(ctx.params.session?.sessionManager)?.failure;
+  if (failure?.code.startsWith("protected_context_")) {
+    // Pi resumes after a cancelled compaction unless the enclosing run is stopped.
+    // This callback aborts its provider guard before another long-context request.
+    ctx.params.onCompactionBlocked?.(failure);
+  }
   const outcome = failure
     ? "failed"
     : wasAborted
@@ -76,7 +81,9 @@ export function handleAutoCompactionEnd(
     ctx.log.debug(`embedded run compaction retry: runId=${ctx.params.runId}`);
   } else {
     ctx.maybeResolveCompactionWait();
-    clearStaleAssistantUsageOnSessionMessages(ctx);
+    if (hasResult && !wasAborted && !failure) {
+      clearStaleAssistantUsageOnSessionMessages(ctx);
+    }
   }
   emitAgentEvent({
     runId: ctx.params.runId,

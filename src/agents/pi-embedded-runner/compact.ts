@@ -78,6 +78,7 @@ import {
   resolveSkillsPromptForRun,
   type SkillSnapshot,
 } from "../skills.js";
+import { resolveToolFsConfig } from "../tool-fs-policy.js";
 import { resolveTranscriptPolicy } from "../transcript-policy.js";
 import {
   compactWithSafetyTimeout,
@@ -782,6 +783,10 @@ async function compactEmbeddedPiSessionDirectInner(
       // Sets compaction/pruning runtime state and returns extension factories
       // that must be passed to the resource loader for the safeguard to be active.
       const extensionFactories = buildEmbeddedExtensionFactories({
+        protectedEvidenceReadable:
+          !sandbox?.enabled &&
+          tools.some((tool) => tool.name === "read") &&
+          !resolveToolFsConfig({ cfg: params.config, agentId: sessionAgentId }).workspaceOnly,
         agentId: sessionAgentId,
         cfg: params.config,
         sessionManager,

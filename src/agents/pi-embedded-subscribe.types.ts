@@ -29,6 +29,8 @@ export type SubscribeEmbeddedPiSessionParams = {
   onPartialReply?: (payload: { text?: string; mediaUrls?: string[] }) => void | Promise<void>;
   onAssistantMessageStart?: () => void | Promise<void>;
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void | Promise<void>;
+  /** Stop the provider loop when protected context cannot be preserved safely. */
+  onCompactionBlocked?: (failure: { code: string; message: string }) => void;
   enforceFinalTag?: boolean;
   config?: OpenClawConfig;
   sessionKey?: string;

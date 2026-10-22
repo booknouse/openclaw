@@ -6,7 +6,7 @@ import {
 } from "./pi-embedded-subscribe.e2e-harness.js";
 
 describe("subscribeEmbeddedPiSession", () => {
-  it("reopens fenced blocks when splitting inside them", () => {
+  it("reopens fenced blocks when splitting inside them", async () => {
     const onBlockReply = vi.fn();
     const { emit } = createParagraphChunkedBlockReplyHarness({
       onBlockReply,
@@ -18,9 +18,10 @@ describe("subscribeEmbeddedPiSession", () => {
 
     const text = `\`\`\`txt\n${"a".repeat(80)}\n\`\`\``;
     emitAssistantTextDeltaAndEnd({ emit, text });
+    await Promise.resolve();
     expectFencedChunks(onBlockReply.mock.calls, "```txt");
   });
-  it("avoids splitting inside tilde fences", () => {
+  it("avoids splitting inside tilde fences", async () => {
     const onBlockReply = vi.fn();
     const { emit } = createParagraphChunkedBlockReplyHarness({
       onBlockReply,
@@ -32,6 +33,7 @@ describe("subscribeEmbeddedPiSession", () => {
 
     const text = "Intro\n\n~~~sh\nline1\nline2\n~~~\n\nOutro";
     emitAssistantTextDeltaAndEnd({ emit, text });
+    await Promise.resolve();
 
     expect(onBlockReply).toHaveBeenCalledTimes(3);
     expect(onBlockReply.mock.calls[1][0].text).toBe("~~~sh\nline1\nline2\n~~~");

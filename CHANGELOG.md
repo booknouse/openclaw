@@ -2,6 +2,19 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.9
+
+### Fixes
+
+- Agents/compaction: distinguish trusted user constraints from internal cross-session input, preserve legacy constraints, and retain oversized identifier collections in verified, readable evidence indexes without clipping required instructions.
+- Agents/compaction: reject repeated deterministic protection failures before provider calls, stop the active native run when protected context cannot be preserved, and retain usage snapshots after failed or cancelled compaction.
+- Agents/streaming: preserve equal adjacent text chunks, ignore duplicate or late completion events, and keep code fences intact at incremental stream and closing-marker boundaries.
+
+### Upgrade notes
+
+- Keep the sessions directory's `.protected-context` evidence indexes together with transcripts when backing up or moving session data. Missing or corrupt indexes fail explicitly; evidence externalization is disabled when the dialogue cannot read those files.
+- Compaction thresholds and model settings are unchanged.
+
 ## 2026.3.13-cortex.8
 
 ### Fixes

@@ -76,6 +76,7 @@ export function buildEmbeddedExtensionFactories(params: {
   abortSignal?: AbortSignal;
   compactionProvider?: string;
   compactionAuthProfileId?: string;
+  protectedEvidenceReadable?: boolean;
 }): ExtensionFactory[] {
   const factories: ExtensionFactory[] = [];
   if (
@@ -97,6 +98,7 @@ export function buildEmbeddedExtensionFactories(params: {
       abortSignal: params.abortSignal,
       timeoutMs: compactionCfg?.timeoutMs,
       conciseSummary: Boolean(compactionModelReference(compactionCfg)),
+      protectedEvidenceReadable: params.protectedEvidenceReadable === true,
       maxHistoryShare: compactionCfg?.maxHistoryShare,
       contextWindowTokens: contextWindowInfo.tokens,
       identifierPolicy: compactionCfg?.identifierPolicy,

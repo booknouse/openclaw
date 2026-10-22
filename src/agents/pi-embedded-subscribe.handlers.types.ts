@@ -52,6 +52,8 @@ export type EmbeddedPiSubscribeState = {
   emittedAssistantUpdate: boolean;
   lastStreamedReasoning?: string;
   lastBlockReplyText?: string;
+  /** Final text snapshot for this message; reset only on message_start. */
+  lastCompletedAssistantText?: string;
   reasoningStreamOpen: boolean;
   assistantMessageIndex: number;
   lastAssistantTextMessageIndex: number;

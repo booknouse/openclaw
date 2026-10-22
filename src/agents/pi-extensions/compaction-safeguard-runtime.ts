@@ -11,6 +11,8 @@ export type CompactionSafeguardRuntimeValue = {
   failure?: { code: string; message: string };
   /** Share the bounded concise generator with background compaction. */
   conciseSummary?: boolean;
+  /** The dialogue's read tool can reach private evidence beside the transcript. */
+  protectedEvidenceReadable?: boolean;
   maxHistoryShare?: number;
   contextWindowTokens?: number;
   identifierPolicy?: AgentCompactionIdentifierPolicy;

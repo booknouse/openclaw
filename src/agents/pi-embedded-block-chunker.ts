@@ -25,6 +25,35 @@ type ParagraphBreak = {
   length: number;
 };
 
+function preserveClosingFence(
+  source: string,
+  start: number,
+  result: BreakResult,
+  force: boolean,
+): BreakResult | null {
+  if (!result.fenceSplit) {
+    return result;
+  }
+  const at = start + result.index;
+  // Inspect the span's final line, not the growing code prefix at every cut.
+  const lineEnd = Math.min(result.fenceSplit.fence.end, source.length);
+  const lineStart = source.lastIndexOf("\n", lineEnd - 1) + 1;
+  if (lineStart <= result.fenceSplit.fence.start || at < lineStart - 1) {
+    return result;
+  }
+  const marker = source.slice(lineStart, lineEnd).match(/^ {0,3}(`+|~+)[\t ]*$/)?.[1];
+  if (!marker || marker[0] !== result.fenceSplit.fence.marker[0]) {
+    return result;
+  }
+  if (marker.length >= result.fenceSplit.fence.marker.length) {
+    // A closing delimiter is metadata, not code to split and then reopen.
+    return { index: lineEnd - start };
+  }
+  // A streamed closing delimiter can arrive one character at a time. Wait for
+  // the rest instead of emitting its first one/two characters as code content.
+  return !force && lineEnd === source.length ? null : result;
+}
+
 function findSafeSentenceBreakIndex(
   text: string,
   fenceSpans: FenceSpan[],
@@ -142,7 +171,10 @@ export class EmbeddedBlockChunker {
     }
 
     const source = this.#buffer;
-    const fenceSpans = parseFenceSpans(source);
+    // During streaming, EOF is provisional. Extend only the parser's view so an
+    // unclosed fence still contains a split exactly at EOF; a closed fence keeps
+    // its real end. The sentinel is never included in emitted text.
+    const fenceSpans = parseFenceSpans(force ? source : `${source}\n`);
     let start = 0;
     let reopenFence: FenceSpan | undefined;
 
@@ -172,7 +204,7 @@ export class EmbeddedBlockChunker {
       }
 
       const view = source.slice(start);
-      const breakResult =
+      let breakResult =
         force && remainingLength <= maxChars
           ? this.#pickSoftBreakIndex(view, fenceSpans, 1, start)
           : this.#pickBreakIndex(
@@ -189,6 +221,12 @@ export class EmbeddedBlockChunker {
         }
         break;
       }
+
+      const safeBreak = preserveClosingFence(source, start, breakResult, force);
+      if (!safeBreak) {
+        break;
+      }
+      breakResult = safeBreak;
 
       const consumed = this.#emitBreakResult({
         breakResult,

@@ -6,7 +6,7 @@ import {
 } from "./pi-embedded-subscribe.e2e-harness.js";
 
 describe("subscribeEmbeddedPiSession", () => {
-  it("keeps indented fenced blocks intact", () => {
+  it("keeps indented fenced blocks intact", async () => {
     const onBlockReply = vi.fn();
     const { emit } = createParagraphChunkedBlockReplyHarness({
       onBlockReply,
@@ -19,11 +19,12 @@ describe("subscribeEmbeddedPiSession", () => {
     const text = "Intro\n\n  ```js\n  const x = 1;\n  ```\n\nOutro";
 
     emitAssistantTextDeltaAndEnd({ emit, text });
+    await Promise.resolve();
 
     expect(onBlockReply).toHaveBeenCalledTimes(3);
     expect(onBlockReply.mock.calls[1][0].text).toBe("  ```js\n  const x = 1;\n  ```");
   });
-  it("accepts longer fence markers for close", () => {
+  it("accepts longer fence markers for close", async () => {
     const onBlockReply = vi.fn();
     const { emit } = createParagraphChunkedBlockReplyHarness({
       onBlockReply,
@@ -36,6 +37,7 @@ describe("subscribeEmbeddedPiSession", () => {
     const text = "Intro\n\n````md\nline1\nline2\n````\n\nOutro";
 
     emitAssistantTextDeltaAndEnd({ emit, text });
+    await Promise.resolve();
 
     const payloadTexts = extractTextPayloads(onBlockReply.mock.calls);
     expect(payloadTexts.length).toBeGreaterThan(0);

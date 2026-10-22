@@ -22,6 +22,8 @@ import {
   compactionBackgroundConcurrency,
   compactionModelReference,
 } from "./compaction-model-config.js";
+import { collectProtectedContext, ProtectedContextError } from "./protected-context.js";
+export { collectProtectedContext } from "./protected-context.js";
 import { stripToolResultDetails } from "./session-transcript-repair.js";
 
 const log = createSubsystemLogger("background-compaction");
@@ -36,6 +38,7 @@ export type BackgroundCompactionParams = {
   agentDir: string;
   provider: string;
   authProfileId?: string;
+  protectedEvidenceReadable?: boolean;
 };
 
 export function backgroundCompactionEnabled(config?: OpenClawConfig): boolean {
@@ -116,85 +119,6 @@ export function backgroundSnapshotMatches(
   );
 }
 
-function messageText(message: AgentMessage): string {
-  if (!("content" in message)) {
-    return "";
-  }
-  if (typeof message.content === "string") {
-    return message.content;
-  }
-  return Array.isArray(message.content)
-    ? message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
-    : "";
-}
-
-/** Keep explicit user constraints verbatim and precise identifiers without accumulating prose. */
-export function collectProtectedContext(messages: AgentMessage[], previous?: string): string {
-  const constraints = new Set<string>();
-  const identifiers = new Set<string>();
-  const marker = "\n<protected-context>\n";
-  const constraintPattern = /不得|禁止|不要|必须|严禁|只读|do not|must|never/i;
-  const identifierPattern =
-    /(?:\/[\w.@-]+){2,}|\b[\w.-]+\.(?:py|ps1|sh|sql|ts)\b|\b(?:[a-f\d]{12,40}|[A-Z][A-Z\d_]+-\d[\w-]*)\b/g;
-  const collect = (line: string, preserveConstraint: boolean) => {
-    const value = line.trim();
-    if (!value) {
-      return;
-    }
-    if (preserveConstraint && constraintPattern.test(value)) {
-      constraints.add(value);
-    }
-    for (const match of value.matchAll(identifierPattern)) {
-      identifiers.add(match[0]);
-    }
-  };
-  // Upgrade old protected blocks in place: retain constraints, deduplicate identifier tokens.
-  const old = previous?.split(marker)[1]?.split("\n</protected-context>")[0];
-  for (const line of old?.split("\n") ?? []) {
-    collect(line, true);
-  }
-  for (const message of stripToolResultDetails(messages)) {
-    if (message.role !== "user" && message.role !== "assistant") {
-      continue;
-    }
-    for (const line of messageText(message).split("\n")) {
-      collect(line, message.role === "user");
-    }
-  }
-  // Keep one textual representation: constraints already contain some identifiers,
-  // and a full path also preserves its parent directories and basename verbatim.
-  // Do not collapse opaque identifiers merely because one is a substring of another.
-  const represented = new Set<string>();
-  for (const line of constraints) {
-    for (const id of line.matchAll(
-      /(?:\/[\w.@-]+){2,}|\b[\w.-]+\.(?:py|ps1|sh|sql|ts)\b|\b(?:[a-f\d]{12,40}|[A-Z][A-Z\d_]+-\d[\w-]*)\b/g,
-    )) {
-      represented.add(id[0]);
-    }
-  }
-  for (const id of identifiers) {
-    if (!id.startsWith("/")) {
-      continue;
-    }
-    const segments = id.split("/");
-    for (let i = 3; i < segments.length; i++) {
-      represented.add(segments.slice(0, i).join("/"));
-    }
-    const basename = segments.at(-1)!;
-    if (/\.(?:py|ps1|sh|sql|ts)$/.test(basename)) {
-      represented.add(basename);
-    }
-  }
-  const result = [...constraints, ...[...identifiers].filter((id) => !represented.has(id))].join(
-    "\n",
-  );
-  // True oversized constraints still fail safely; never clip user instructions to fit.
-  if (result.length > 24_000) {
-    throw new Error("protected_context_too_large");
-  }
-  return result ? `${marker}${result}\n</protected-context>` : "";
-}
-
 /** Called under the normal session write lock, before constructing the Pi session. */
 export function commitReadyBackgroundCompaction(params: BackgroundCompactionParams): boolean {
   const job = getBackgroundCompactionJob(params.sessionFile);
@@ -211,6 +135,19 @@ export function commitReadyBackgroundCompaction(params: BackgroundCompactionPara
     return false;
   }
   const summary = job.summary! + (job.protectedContext ?? "");
+  try {
+    collectProtectedContext([], job.protectedContext, {
+      sessionFile: params.protectedEvidenceReadable ? params.sessionFile : undefined,
+    });
+  } catch (error) {
+    if (!(error instanceof ProtectedContextError)) {
+      throw error;
+    }
+    job.state = "failed";
+    job.reason = error.code;
+    job.protectionFingerprint = error.fingerprint;
+    return false;
+  }
   params.sessionManager.appendCompaction(
     summary,
     job.preparation.firstKeptEntryId,
@@ -244,7 +181,7 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
     existing &&
     (existing.state === "running" ||
       existing.state === "ready" ||
-      (existing.retryAfter ?? 0) > Date.now())
+      (!existing.protectionFingerprint && (existing.retryAfter ?? 0) > Date.now()))
   ) {
     return false;
   }
@@ -269,6 +206,31 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
     snapshotHash: fingerprint(entries),
     preparation: structuredClone(preparation),
   };
+  try {
+    job.protectedContext = collectProtectedContext(
+      preparation.messagesToSummarize,
+      preparation.previousSummary,
+      { sessionFile: params.protectedEvidenceReadable ? params.sessionFile : undefined },
+    );
+  } catch (error) {
+    if (!(error instanceof ProtectedContextError)) {
+      throw error;
+    }
+    // A deterministic protection failure is not a provider attempt. Retry only
+    // when the protected input changes; internal chatter must not restart it.
+    if (existing?.protectionFingerprint === error.fingerprint && existing.reason === error.code) {
+      return false;
+    }
+    job.state = "failed";
+    job.reason = error.code;
+    job.protectionFingerprint = error.fingerprint;
+    job.finishedAt = Date.now();
+    if (claimBackgroundCompaction(params.sessionFile, job, compactionBackgroundConcurrency(cfg))) {
+      releaseBackgroundCompactionSlot();
+      log.warn(`blocked session=${params.sessionId} reason=${error.code}`);
+    }
+    return false;
+  }
   if (!claimBackgroundCompaction(params.sessionFile, job, compactionBackgroundConcurrency(cfg))) {
     return false;
   }
@@ -282,7 +244,6 @@ export function scheduleBackgroundCompaction(params: BackgroundCompactionParams)
   void Promise.resolve().then(async () => {
     try {
       const source = preparation.messagesToSummarize;
-      job.protectedContext = collectProtectedContext(source, preparation.previousSummary);
       const { summarizeBackgroundContext } = await import("./background-compaction-model.js");
       const summary = await Promise.race([
         summarizeBackgroundContext({
