@@ -61,6 +61,8 @@ export type EmbeddedRunAttemptResult = {
   successfulCronAdds?: number;
   cloudCodeAssistFormatError: boolean;
   attemptUsage?: NormalizedUsage;
+  /** Protection failure that stopped this attempt before another provider call. */
+  compactionFailure?: { code: string; message: string };
   compactionCount?: number;
   /** Client tool call detected (OpenResponses hosted tools). */
   clientToolCall?: { name: string; params: Record<string, unknown> };

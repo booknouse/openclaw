@@ -2242,6 +2242,7 @@ export async function runEmbeddedAttempt(
         return boundedStream(model, context, options);
       };
 
+      let compactionFailure: EmbeddedRunAttemptResult["compactionFailure"];
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
         runId: params.runId,
@@ -2261,7 +2262,10 @@ export async function runEmbeddedAttempt(
         onPartialReply: params.onPartialReply,
         onAssistantMessageStart: params.onAssistantMessageStart,
         onAgentEvent: params.onAgentEvent,
-        onCompactionBlocked: (failure) => abortRun(false, new Error(failure.message)),
+        onCompactionBlocked: (failure) => {
+          compactionFailure = failure;
+          abortRun(false, new Error(failure.message));
+        },
         enforceFinalTag: params.enforceFinalTag,
         config: params.config,
         sessionKey: sandboxSessionKey,
@@ -2282,6 +2286,7 @@ export async function runEmbeddedAttempt(
         didSendViaMessagingTool,
         getLastToolError,
         getUsageTotals,
+        getLastAssistantMessage,
         getCompactionCount,
       } = subscription;
 
@@ -2806,10 +2811,9 @@ export async function runEmbeddedAttempt(
         params.abortSignal?.removeEventListener?.("abort", onAbort);
       }
 
-      const lastAssistant = messagesSnapshot
-        .slice()
-        .toReversed()
-        .find((m) => m.role === "assistant");
+      // The snapshot includes historical replies even when pre-prompt compaction
+      // aborts without calling a model. Never use those as this attempt's output.
+      const lastAssistant = getLastAssistantMessage();
 
       const toolMetasNormalized = toolMetas
         .filter(
@@ -2868,6 +2872,7 @@ export async function runEmbeddedAttempt(
           lastAssistant?.errorMessage && isCloudCodeAssistFormatError(lastAssistant.errorMessage),
         ),
         attemptUsage: getUsageTotals(),
+        compactionFailure,
         compactionCount: getCompactionCount() + (backgroundCompactionCommitted ? 1 : 0),
         // Client tool call detected (OpenResponses hosted tools)
         clientToolCall: clientToolCallDetected ?? undefined,

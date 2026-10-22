@@ -1,18 +1,12 @@
 import "./run.overflow-compaction.mocks.shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const runtimePluginMocks = vi.hoisted(() => ({
-  ensureRuntimePluginsLoaded: vi.fn(),
-}));
-
-vi.mock("../runtime-plugins.js", () => ({
-  ensureRuntimePluginsLoaded: runtimePluginMocks.ensureRuntimePluginsLoaded,
-}));
-
+import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
 import { runEmbeddedPiAgent } from "./run.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
+import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 
 const mockedRunEmbeddedAttempt = vi.mocked(runEmbeddedAttempt);
+const mockedEnsureRuntimePluginsLoaded = vi.mocked(ensureRuntimePluginsLoaded);
 
 describe("runEmbeddedPiAgent usage reporting", () => {
   beforeEach(() => {
@@ -39,7 +33,7 @@ describe("runEmbeddedPiAgent usage reporting", () => {
       runId: "run-plugin-bootstrap",
     });
 
-    expect(runtimePluginMocks.ensureRuntimePluginsLoaded).toHaveBeenCalledWith({
+    expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
       config: undefined,
       workspaceDir: "/tmp/workspace",
     });
@@ -156,5 +150,91 @@ describe("runEmbeddedPiAgent usage reporting", () => {
     // Check if total matches the last turn's total (200)
     // If the bug exists, it will likely be 350
     expect(usage?.total).toBe(200);
+  });
+
+  it.each(["protected_context_too_large", "protected_context_evidence_unavailable"])(
+    "returns %s explicitly with no reply or usage from history when no model ran",
+    async (code) => {
+      const historical = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "old response" }],
+        usage: { input: 63000, output: 10, total: 63010 },
+      };
+      mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+        aborted: true,
+        timedOut: false,
+        timedOutDuringCompaction: false,
+        promptError: new Error("aborted"),
+        sessionIdUsed: "test-session",
+        messagesSnapshot: [historical],
+        assistantTexts: [],
+        toolMetas: [],
+        lastAssistant: undefined,
+        compactionFailure: { code, message: `${code}: history preserved` },
+      } as unknown as Awaited<ReturnType<typeof runEmbeddedAttempt>>);
+
+      const result = await runEmbeddedPiAgent({
+        sessionId: "test-session",
+        sessionKey: "test-key",
+        sessionFile: "/tmp/session.json",
+        workspaceDir: "/tmp/workspace",
+        prompt: "hello",
+        timeoutMs: 30000,
+        runId: `run-${code}`,
+      });
+
+      expect(result.meta.aborted).toBe(true);
+      expect(result.meta.agentMeta?.usage).toBeUndefined();
+      expect(result.meta.agentMeta?.lastCallUsage).toBeUndefined();
+      expect(result.meta.agentMeta?.promptTokens).toBeUndefined();
+      expect(result.payloads).toEqual([{ text: `${code}: history preserved`, isError: true }]);
+      expect(result.meta.error).toEqual({
+        kind: "compaction_failure",
+        message: `${code}: history preserved`,
+      });
+      expect(historical.usage.input).toBe(63000);
+    },
+  );
+
+  it("preserves the current reply and paid usage when protection stops a later model call", async () => {
+    const failure = {
+      code: "protected_context_too_large",
+      message: "protected_context_too_large: history preserved",
+    };
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce({
+      aborted: true,
+      timedOut: false,
+      timedOutDuringCompaction: false,
+      promptError: new Error("aborted"),
+      sessionIdUsed: "test-session",
+      assistantTexts: ["current response"],
+      toolMetas: [],
+      lastAssistant: {
+        role: "assistant",
+        content: [{ type: "text", text: "current response" }],
+        usage: { input: 100, output: 10, total: 110 },
+        stopReason: "stop",
+      },
+      attemptUsage: { input: 100, output: 10, total: 110 },
+      compactionFailure: failure,
+    } as unknown as Awaited<ReturnType<typeof runEmbeddedAttempt>>);
+
+    vi.mocked(buildEmbeddedRunPayloads).mockReturnValueOnce([{ text: "current response" }]);
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "hello",
+      timeoutMs: 30000,
+      runId: "run-protection-after-response",
+    });
+
+    expect(result.meta.agentMeta?.usage).toMatchObject({ input: 100, output: 10, total: 110 });
+    expect(result.payloads).toEqual([
+      expect.objectContaining({ text: "current response" }),
+      { text: failure.message, isError: true },
+    ]);
   });
 });

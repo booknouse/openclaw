@@ -1540,6 +1540,9 @@ async function runEmbeddedPiAgentInner(
             didSendViaMessagingTool: attempt.didSendViaMessagingTool,
             didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
           });
+          if (attempt.compactionFailure) {
+            payloads.push({ text: attempt.compactionFailure.message, isError: true });
+          }
 
           // Timeout aborts can leave the run without any assistant payloads.
           // Emit an explicit timeout error instead of silently completing, so
@@ -1592,6 +1595,9 @@ async function runEmbeddedPiAgentInner(
               agentMeta,
               aborted,
               systemPromptReport: attempt.systemPromptReport,
+              error: attempt.compactionFailure
+                ? { kind: "compaction_failure", message: attempt.compactionFailure.message }
+                : undefined,
               // Handle client tool calls (OpenResponses hosted tools)
               // Propagate the LLM stop reason so callers (lifecycle events,
               // ACP bridge) can distinguish end_turn from max_tokens.

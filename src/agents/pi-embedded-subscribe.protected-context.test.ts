@@ -7,6 +7,39 @@ import { makeZeroUsageSnapshot } from "./usage.js";
 
 type Session = Parameters<typeof subscribeEmbeddedPiSession>[0]["session"];
 
+it("does not use a historical assistant as the current attempt's reply or usage", () => {
+  const historical: AssistantMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "old response" }],
+    api: "openai-completions",
+    provider: "test",
+    model: "test",
+    stopReason: "stop",
+    timestamp: 0,
+    usage: { ...makeZeroUsageSnapshot(), input: 63000, totalTokens: 63000 },
+  };
+  const h = createSubscribedSessionHarness({
+    runId: "current-attempt-only",
+    sessionExtras: { messages: [historical] },
+  });
+  try {
+    expect(h.subscription.getLastAssistantMessage()).toBeUndefined();
+    expect(h.subscription.getUsageTotals()).toBeUndefined();
+    const current: AssistantMessage = {
+      ...historical,
+      content: [{ type: "text", text: "current response" }],
+      usage: { ...makeZeroUsageSnapshot(), input: 100, totalTokens: 100 },
+    };
+    h.emit({ type: "message_start", message: current });
+    h.emit({ type: "message_end", message: current });
+    expect(h.subscription.getLastAssistantMessage()).toBe(current);
+    expect(h.subscription.getUsageTotals()?.input).toBe(100);
+    expect(historical.usage.input).toBe(63000);
+  } finally {
+    h.subscription.unsubscribe();
+  }
+});
+
 it.each(["protected_context_too_large", "protected_context_evidence_unavailable"])(
   "stops the enclosing provider guard and reports %s without erasing usage",
   (code) => {
@@ -39,6 +72,8 @@ it.each(["protected_context_too_large", "protected_context_evidence_unavailable"
       expect(controller.signal.aborted).toBe(true);
       expect(onCompactionBlocked).toHaveBeenCalledOnce();
       expect(message.usage.input).toBe(260000);
+      expect(h.subscription.getLastAssistantMessage()).toBeUndefined();
+      expect(h.subscription.getUsageTotals()).toBeUndefined();
       expect(h.subscription.getCompactionCount()).toBe(0);
       expect(onAgentEvent).toHaveBeenCalledWith({
         stream: "compaction",

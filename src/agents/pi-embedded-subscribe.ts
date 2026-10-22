@@ -713,6 +713,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     didSendViaMessagingTool: () => messagingToolSentTexts.length > 0,
     didSendDeterministicApprovalPrompt: () => state.deterministicApprovalPromptSent,
     getLastToolError: () => (state.lastToolError ? { ...state.lastToolError } : undefined),
+    // Only messages observed by this subscription belong to the current attempt.
+    getLastAssistantMessage: () =>
+      state.lastAssistant?.role === "assistant" ? state.lastAssistant : undefined,
     getUsageTotals,
     getCompactionCount: () => compactionCount,
     waitForCompactionRetry: () => {

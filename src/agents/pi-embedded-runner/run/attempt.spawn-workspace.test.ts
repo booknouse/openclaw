@@ -244,6 +244,7 @@ function createSubscriptionMock() {
     didSendDeterministicApprovalPrompt: () => false,
     getLastToolError: () => undefined,
     getUsageTotals: () => undefined,
+    getLastAssistantMessage: () => undefined,
     getCompactionCount: () => 0,
     isCompacting: () => false,
   };
