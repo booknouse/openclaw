@@ -71,6 +71,41 @@ describe("agent event handler", () => {
     };
   }
 
+  it("finishes a pre-prompt protection failure with one chat error and releases its link", () => {
+    const h = createHarness();
+    h.chatRunState.registry.add("run-protected", {
+      sessionKey: "session-protected",
+      clientRunId: "client-protected",
+    });
+    for (const [seq, data] of [
+      [1, { phase: "start" }],
+      [2, { phase: "end", outcome: "failed", errorCode: "protected_context_too_large" }],
+    ] as const) {
+      h.handler({ runId: "run-protected", seq, stream: "compaction", ts: Date.now(), data });
+    }
+    expect(chatBroadcastCalls(h.broadcast)).toHaveLength(0);
+    h.handler({
+      runId: "run-protected",
+      seq: 3,
+      stream: "lifecycle",
+      ts: Date.now(),
+      data: {
+        phase: "error",
+        errorCode: "protected_context_too_large",
+        error: "protected_context_too_large: history preserved",
+      },
+    });
+    const chats = chatBroadcastCalls(h.broadcast);
+    expect(chats).toHaveLength(1);
+    expect(chats[0][1]).toMatchObject({
+      runId: "client-protected",
+      state: "error",
+      errorMessage: "protected_context_too_large: history preserved",
+    });
+    expect(h.chatRunState.registry.peek("run-protected")).toBeUndefined();
+    expect(h.agentRunSeq.has("run-protected")).toBe(false);
+  });
+
   it("keeps the chat mapping through overflow recovery and emits the original final", () => {
     const h = createHarness();
     h.chatRunState.registry.add("run-recovery", {

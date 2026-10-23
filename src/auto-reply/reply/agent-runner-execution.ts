@@ -319,6 +319,7 @@ export async function runAgentTurnWithFallback(params: {
             },
           );
           return (async () => {
+            let lifecycleTerminalEmitted = false;
             const result = await runEmbeddedPiAgent({
               ...embeddedContext,
               trigger: params.isHeartbeat ? "heartbeat" : "user",
@@ -373,6 +374,12 @@ export async function runAgentTurnWithFallback(params: {
                   : undefined,
               onReasoningEnd: params.opts?.onReasoningEnd,
               onAgentEvent: async (evt) => {
+                if (
+                  evt.stream === "lifecycle" &&
+                  (evt.data.phase === "end" || evt.data.phase === "error")
+                ) {
+                  lifecycleTerminalEmitted = true;
+                }
                 // Signal run start only after the embedded agent emits real activity.
                 const hasLifecyclePhase =
                   evt.stream === "lifecycle" && typeof evt.data.phase === "string";
@@ -396,7 +403,9 @@ export async function runAgentTurnWithFallback(params: {
                     await params.opts?.onCompactionStart?.();
                   }
                   if (phase === "end") {
-                    autoCompactionCompleted = true;
+                    if (evt.data.outcome !== "failed" && evt.data.outcome !== "cancelled") {
+                      autoCompactionCompleted = true;
+                    }
                     await params.opts?.onCompactionEnd?.();
                   }
                 }
@@ -466,6 +475,23 @@ export async function runAgentTurnWithFallback(params: {
             bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
               result.meta?.systemPromptReport,
             );
+            // Pre-prompt compaction can stop before the SDK emits agent_start/end.
+            // Webchat already linked the run on its compaction event and needs a
+            // terminal lifecycle event even though no model response was produced.
+            if (result.meta?.error?.kind === "compaction_failure" && !lifecycleTerminalEmitted) {
+              const error = result.meta.error.message;
+              const errorCode = error.match(/^(protected_context_[a-z_]+):/)?.[1];
+              emitAgentEvent({
+                runId,
+                stream: "lifecycle",
+                data: {
+                  phase: "error",
+                  endedAt: Date.now(),
+                  error,
+                  ...(errorCode ? { errorCode } : {}),
+                },
+              });
+            }
             return result;
           })();
         },

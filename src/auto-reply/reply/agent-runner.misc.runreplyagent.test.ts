@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore, saveSessionStore } from "../../config/sessions.js";
-import { onAgentEvent } from "../../infra/agent-events.js";
+import { emitAgentEvent, onAgentEvent } from "../../infra/agent-events.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../../infra/system-events.js";
 import type { TemplateContext } from "../templating.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
@@ -215,6 +215,79 @@ describe("runReplyAgent onAgentRunStart", () => {
     expect(onAgentRunStart).toHaveBeenCalledWith("run-started");
     expect(result).toMatchObject({ text: "ok" });
   });
+
+  it.each(["protected_context_too_large", "protected_context_evidence_unavailable"])(
+    "terminates pre-prompt %s failures, including repeated requests",
+    async (code) => {
+      const failure = `${code}: history preserved`;
+      const terminals: Array<{ runId: string; data: Record<string, unknown> }> = [];
+      const unsubscribe = onAgentEvent((evt) => {
+        if (evt.runId.startsWith("run-protected-") && evt.stream === "lifecycle") {
+          terminals.push({ runId: evt.runId, data: evt.data });
+        }
+      });
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          runEmbeddedPiAgentMock.mockImplementationOnce(async (params) => {
+            for (const data of [
+              { phase: "start" },
+              { phase: "end", outcome: "failed", errorCode: code, error: failure },
+            ]) {
+              emitAgentEvent({ runId: params.runId, stream: "compaction", data });
+              await params.onAgentEvent?.({ stream: "compaction", data });
+            }
+            return {
+              payloads: [{ text: failure, isError: true }],
+              meta: { aborted: true, error: { kind: "compaction_failure", message: failure } },
+            };
+          });
+          const runId = `run-protected-${code}-${attempt}`;
+          const onAgentRunStart = vi.fn();
+          await createRun({ opts: { runId, onAgentRunStart } });
+          expect(onAgentRunStart).toHaveBeenCalledOnce();
+          expect(terminals.filter((evt) => evt.runId === runId)).toEqual([
+            {
+              runId,
+              data: expect.objectContaining({ phase: "error", errorCode: code, error: failure }),
+            },
+          ]);
+        }
+      } finally {
+        unsubscribe();
+      }
+    },
+  );
+
+  it.each(["end", "error"])("does not duplicate an existing %s terminal", async (phase) => {
+    const runId = `run-protection-after-${phase}`;
+    const terminals: string[] = [];
+    const unsubscribe = onAgentEvent((evt) => {
+      if (evt.runId === runId && evt.stream === "lifecycle") {
+        terminals.push(String(evt.data.phase));
+      }
+    });
+    try {
+      runEmbeddedPiAgentMock.mockImplementationOnce(async (params) => {
+        const data = { phase };
+        emitAgentEvent({ runId, stream: "lifecycle", data });
+        await params.onAgentEvent?.({ stream: "lifecycle", data });
+        return {
+          payloads: [{ text: "protected_context_too_large: history preserved", isError: true }],
+          meta: {
+            aborted: true,
+            error: {
+              kind: "compaction_failure",
+              message: "protected_context_too_large: history preserved",
+            },
+          },
+        };
+      });
+      await createRun({ opts: { runId } });
+      expect(terminals).toEqual([phase]);
+    } finally {
+      unsubscribe();
+    }
+  });
 });
 
 describe("runReplyAgent authProfileId fallback scoping", () => {
@@ -322,7 +395,7 @@ describe("runReplyAgent auto-compaction token update", () => {
     extraSystemPrompt?: string;
     onAgentEvent?: (evt: {
       stream?: string;
-      data?: { phase?: string; willRetry?: boolean };
+      data?: { phase?: string; willRetry?: boolean; outcome?: string };
     }) => void;
   };
 
@@ -380,6 +453,71 @@ describe("runReplyAgent auto-compaction token update", () => {
     } as unknown as FollowupRun;
     return { typing, sessionCtx, resolvedQueue, followupRun };
   }
+
+  it.each(["failed", "cancelled"])("does not count %s compaction as completed", async (outcome) => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-compact-failed-"));
+    try {
+      const storePath = path.join(tmp, "sessions.json");
+      const sessionKey = "main";
+      const sessionEntry = {
+        sessionId: "session",
+        updatedAt: Date.now(),
+        totalTokens: 181000,
+        compactionCount: 2,
+      };
+      await seedSessionStore({ storePath, sessionKey, entry: sessionEntry });
+      runEmbeddedPiAgentMock.mockImplementationOnce(async (params: EmbeddedRunParams) => {
+        params.onAgentEvent?.({ stream: "compaction", data: { phase: "start" } });
+        await Promise.resolve(
+          params.onAgentEvent?.({ stream: "compaction", data: { phase: "end", outcome } }),
+        );
+        return {
+          payloads: [{ text: "protected_context_too_large: history preserved", isError: true }],
+          meta: {
+            aborted: true,
+            error: {
+              kind: "compaction_failure",
+              message: "protected_context_too_large: history preserved",
+            },
+          },
+        };
+      });
+      const base = createBaseRun({
+        storePath,
+        sessionEntry,
+        config: {
+          agents: { defaults: { compaction: { memoryFlush: { enabled: false } } } },
+        },
+      });
+      await runReplyAgent({
+        ...base,
+        commandBody: "hello",
+        queueKey: sessionKey,
+        resolvedQueue: base.resolvedQueue,
+        shouldSteer: false,
+        shouldFollowup: false,
+        isActive: false,
+        isStreaming: false,
+        sessionEntry,
+        sessionStore: { [sessionKey]: sessionEntry },
+        sessionKey,
+        storePath,
+        defaultModel: "anthropic/claude-opus-4-5",
+        agentCfgContextTokens: 200000,
+        resolvedVerboseLevel: "off",
+        isNewSession: false,
+        blockStreamingEnabled: false,
+        resolvedBlockStreamingBreak: "message_end",
+        shouldInjectGroupIntro: false,
+        typingMode: "instant",
+      });
+      const stored = JSON.parse(await fs.readFile(storePath, "utf8"));
+      expect(stored[sessionKey].compactionCount).toBe(2);
+      expect(stored[sessionKey].totalTokens).toBe(181000);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
 
   it("updates totalTokens after auto-compaction using lastCallUsage", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-compact-tokens-"));
