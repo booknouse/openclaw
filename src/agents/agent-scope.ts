@@ -26,6 +26,7 @@ export { resolveAgentIdFromSessionKey };
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number];
 
 type ResolvedAgentConfig = {
+  modelRouting?: AgentEntry["modelRouting"];
   name?: string;
   workspace?: string;
   agentDir?: string;
@@ -132,6 +133,7 @@ export function resolveAgentConfig(
       typeof entry.model === "string" || (entry.model && typeof entry.model === "object")
         ? entry.model
         : undefined,
+    modelRouting: entry.modelRouting,
     skills: Array.isArray(entry.skills) ? entry.skills : undefined,
     memorySearch: entry.memorySearch,
     humanDelay: entry.humanDelay,

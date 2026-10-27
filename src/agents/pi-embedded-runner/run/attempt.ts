@@ -57,6 +57,7 @@ import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
+import { applyCostRoutingToolPolicy, resolveCostRoutingModels } from "../../model-routing.js";
 import { normalizeProviderId, resolveDefaultModelForAgent } from "../../model-selection.js";
 import { supportsModelTools } from "../../model-tool-support.js";
 import { wrapStreamWithAgentUserAgent } from "../../model-user-agent.js";
@@ -1537,9 +1538,23 @@ export async function runEmbeddedAttempt(
             abortSessionForYield?.();
           },
         });
+    const costModels =
+      params.costRoutingRole === "orchestrator" && params.config
+        ? resolveCostRoutingModels(params.config, sessionAgentId)
+        : undefined;
+    const routedTools = applyCostRoutingToolPolicy(
+      toolsRaw,
+      params.costRoutingRole,
+      costModels
+        ? {
+            workerModel: `${costModels.worker.provider}/${costModels.worker.model}`,
+            agentId: sessionAgentId,
+          }
+        : undefined,
+    );
     const toolsEnabled = supportsModelTools(params.model);
     const tools = sanitizeToolsForGoogle({
-      tools: toolsEnabled ? toolsRaw : [],
+      tools: toolsEnabled ? routedTools.tools : [],
       provider: params.provider,
     });
     const clientTools = toolsEnabled ? params.clientTools : undefined;
@@ -1651,7 +1666,9 @@ export async function runEmbeddedAttempt(
       workspaceDir: effectiveWorkspace,
       defaultThinkLevel: params.thinkLevel,
       reasoningLevel: params.reasoningLevel ?? "off",
-      extraSystemPrompt: params.extraSystemPrompt,
+      extraSystemPrompt:
+        [params.extraSystemPrompt, routedTools.systemPrompt].filter(Boolean).join("\n\n") ||
+        undefined,
       ownerNumbers: params.ownerNumbers,
       ownerDisplay: ownerDisplay.ownerDisplay,
       ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,
@@ -2262,6 +2279,7 @@ export async function runEmbeddedAttempt(
         onPartialReply: params.onPartialReply,
         onAssistantMessageStart: params.onAssistantMessageStart,
         onAgentEvent: params.onAgentEvent,
+        deferModelFallbackErrors: params.modelRoutingFallback,
         onCompactionBlocked: (failure) => {
           compactionFailure = failure;
           abortRun(false, new Error(failure.message));

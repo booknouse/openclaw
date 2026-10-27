@@ -36,6 +36,8 @@ import {
   resolveAuthProfileOrder,
   type ResolvedProviderAuth,
 } from "../model-auth.js";
+import { runWithModelFallback } from "../model-fallback.js";
+import { resolveCostRoutingPlan } from "../model-routing.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
@@ -61,6 +63,7 @@ import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js"
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
+import { runWithModelRoutingLifecycle } from "./model-routing-lifecycle.js";
 import { resolveModel } from "./model.js";
 import { runWithOverflowRecovery } from "./overflow-recovery.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
@@ -258,7 +261,56 @@ function buildErrorAgentMeta(params: {
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
-  return runWithOverflowRecovery(params, runEmbeddedPiAgentInner);
+  const plan = resolveCostRoutingPlan(params);
+  if (!plan) {
+    return runWithOverflowRecovery(params, runEmbeddedPiAgentInner);
+  }
+  log.info(
+    `model-routing run=${params.runId} role=${plan.role} primary=${plan.primary.provider}/${plan.primary.model} worker=${plan.worker.provider}/${plan.worker.model}`,
+  );
+  if (plan.role === "orchestrator") {
+    return runWithOverflowRecovery(
+      { ...params, costRoutingRole: "orchestrator" },
+      runEmbeddedPiAgentInner,
+    );
+  }
+  return runWithModelRoutingLifecycle(params, async (routingParams) => {
+    const startedAt = Date.now();
+    const routed = await runWithModelFallback({
+      cfg: params.config,
+      provider: plan.worker.provider,
+      model: plan.worker.model,
+      agentDir: params.agentDir,
+      runId: params.runId,
+      fallbacksOverride: [`${plan.primary.provider}/${plan.primary.model}`],
+      run: (provider, model, options) => {
+        if (params.abortSignal?.aborted) {
+          throw params.abortSignal.reason ?? new Error("Run aborted");
+        }
+        const timeoutMs = params.timeoutMs - (Date.now() - startedAt);
+        if (timeoutMs <= 0) {
+          throw new Error("Cost-routed run timed out");
+        }
+        return runWithOverflowRecovery(
+          {
+            ...routingParams,
+            provider,
+            model,
+            // Automatically selected credentials are scoped to their original provider.
+            authProfileId: provider === params.provider ? params.authProfileId : undefined,
+            authProfileIdSource:
+              provider === params.provider ? params.authProfileIdSource : undefined,
+            timeoutMs,
+            // Both candidates are text-only, so a failed worker cannot repeat tool effects.
+            costRoutingRole: "direct",
+            allowTransientCooldownProbe: options?.allowTransientCooldownProbe,
+          },
+          runEmbeddedPiAgentInner,
+        );
+      },
+    });
+    return routed.result;
+  });
 }
 
 async function runEmbeddedPiAgentInner(
@@ -307,11 +359,13 @@ async function runEmbeddedPiAgentInner(
       let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
       const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
-      const fallbackConfigured = hasConfiguredModelFallbacks({
-        cfg: params.config,
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-      });
+      const fallbackConfigured =
+        params.costRoutingRole === "direct" ||
+        hasConfiguredModelFallbacks({
+          cfg: params.config,
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+        });
       await ensureOpenClawModelsJson(params.config, agentDir);
 
       // Run before_model_resolve hooks early so plugins can override the
@@ -860,6 +914,12 @@ async function runEmbeddedPiAgentInner(
             sessionId: params.sessionId,
             sessionKey: params.sessionKey,
             trigger: params.trigger,
+            modelRoutingFallback: params.modelRoutingFallback,
+            // Plugin model overrides retain authority over the selected model and tool flow.
+            costRoutingRole:
+              modelResolveOverride?.providerOverride || modelResolveOverride?.modelOverride
+                ? undefined
+                : params.costRoutingRole,
             memoryFlushWritePath: params.memoryFlushWritePath,
             messageChannel: params.messageChannel,
             messageProvider: params.messageProvider,

@@ -2,6 +2,13 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.11
+
+### Changes
+
+- Agents/model routing: add opt-in cost routing with a primary planner/reviewer and configured subagent execution model. Self-contained text requests can run directly on the worker; identical resolved models and disabled routing preserve the existing flow.
+- Agents/model routing: limit planner tools, pin same-agent workers to their configured model, require concise task/evidence handoffs, and keep direct worker fallback linked until a single final result or failure.
+
 ## 2026.3.13-cortex.10
 
 ### Fixes

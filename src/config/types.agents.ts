@@ -65,6 +65,8 @@ export type AgentConfig = {
   workspace?: string;
   agentDir?: string;
   model?: AgentModelConfig;
+  /** Override the default cost-routing policy for this agent. */
+  modelRouting?: AgentDefaultsConfig["modelRouting"];
   /** Optional allowlist of skills for this agent (omit = all skills; empty = none). */
   skills?: string[];
   memorySearch?: MemorySearchConfig;

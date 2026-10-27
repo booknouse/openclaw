@@ -31,6 +31,8 @@ export type SubscribeEmbeddedPiSessionParams = {
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void | Promise<void>;
   /** Stop the provider loop when protected context cannot be preserved safely. */
   onCompactionBlocked?: (failure: { code: string; message: string }) => void;
+  /** Keep retryable provider failures nonterminal while the cost router owns fallback. */
+  deferModelFallbackErrors?: boolean;
   enforceFinalTag?: boolean;
   config?: OpenClawConfig;
   sessionKey?: string;

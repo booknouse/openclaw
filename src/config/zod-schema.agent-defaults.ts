@@ -17,6 +17,7 @@ import {
 export const AgentDefaultsSchema = z
   .object({
     model: AgentModelSchema.optional(),
+    modelRouting: z.enum(["off", "cost"]).optional(),
     imageModel: AgentModelSchema.optional(),
     pdfModel: AgentModelSchema.optional(),
     pdfMaxBytesMb: z.number().positive().optional(),

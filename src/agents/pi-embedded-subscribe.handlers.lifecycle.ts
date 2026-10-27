@@ -9,6 +9,7 @@ import {
   classifyFailoverReason,
   formatAssistantErrorText,
   isLikelyContextOverflowError,
+  isFailoverAssistantError,
 } from "./pi-embedded-helpers.js";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { isAssistantMessage } from "./pi-embedded-utils.js";
@@ -68,7 +69,11 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
     });
     // SDK agent_end precedes its auto-compaction check. Keep the request linked
     // while the outer runner owns overflow recovery and the eventual terminal event.
-    const phase = isLikelyContextOverflowError(rawError ?? "") ? "recovering" : "error";
+    const phase = isLikelyContextOverflowError(rawError ?? "")
+      ? "recovering"
+      : ctx.params.deferModelFallbackErrors && isFailoverAssistantError(lastAssistant)
+        ? "model_fallback"
+        : "error";
     emitAgentEvent({
       runId: ctx.params.runId,
       stream: "lifecycle",

@@ -997,6 +997,9 @@ export const FIELD_HELP: Record<string, string> = {
   "plugins.installs.*.installedAt": "ISO timestamp of last install/update.",
   "agents.list.*.identity.avatar":
     "Agent avatar (workspace-relative path, http(s) URL, or data URI).",
+  "agents.defaults.modelRouting":
+    'Opt-in model routing: "off" preserves the existing flow; "cost" sends self-contained text tasks to subagents.model and uses the primary model for orchestration and review. Identical resolved models bypass routing. Execution requires embedded subagents; configure a cheaper worker model explicitly.',
+  "agents.list[].modelRouting": "Per-agent override of agents.defaults.modelRouting.",
   "agents.defaults.model.primary": "Primary model (provider/model).",
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",

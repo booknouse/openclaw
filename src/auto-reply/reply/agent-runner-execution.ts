@@ -330,6 +330,19 @@ export async function runAgentTurnWithFallback(params: {
               ...senderContext,
               ...runBaseParams,
               prompt: params.commandBody,
+              // Route using the channel's clean message, not sender/history envelopes.
+              // Attachments and reply/thread context remain on the primary model.
+              modelRoutingPrompt:
+                params.sessionCtx.MediaPath ||
+                params.sessionCtx.MediaPaths?.length ||
+                params.sessionCtx.ReplyToBody ||
+                params.sessionCtx.ThreadHistoryBody ||
+                params.sessionCtx.InboundHistory?.length
+                  ? ""
+                  : (params.sessionCtx.BodyForCommands ??
+                    params.sessionCtx.CommandBody ??
+                    params.sessionCtx.RawBody ??
+                    params.commandBody),
               extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
               toolResultFormat: (() => {
                 const channel = resolveMessageChannel(

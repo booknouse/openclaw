@@ -38,6 +38,28 @@ function createContext(
 }
 
 describe("handleAgentEnd", () => {
+  it("does not detach a cost-routed run before trying its primary fallback", () => {
+    const onAgentEvent = vi.fn();
+    const ctx = createContext(
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "404 model terra not found",
+        content: [],
+      },
+      { onAgentEvent },
+    );
+    ctx.params.deferModelFallbackErrors = true;
+    handleAgentEnd(ctx);
+    expect(onAgentEvent).toHaveBeenCalledWith({
+      stream: "lifecycle",
+      data: expect.objectContaining({ phase: "model_fallback" }),
+    });
+    expect(onAgentEvent).not.toHaveBeenCalledWith({
+      stream: "lifecycle",
+      data: expect.objectContaining({ phase: "error" }),
+    });
+  });
   it("keeps context overflow nonterminal before the SDK starts compaction", () => {
     const onAgentEvent = vi.fn();
     const ctx = createContext(

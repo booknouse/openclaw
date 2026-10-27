@@ -69,6 +69,8 @@ export type RunEmbeddedPiAgentParams = {
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;
   prompt: string;
+  /** Clean current user text for routing only; the full prompt remains unchanged. */
+  modelRoutingPrompt?: string;
   images?: ImageContent[];
   /** Optional client-provided tools (OpenResponses hosted tools). */
   clientTools?: ClientToolDefinition[];
@@ -113,6 +115,10 @@ export type RunEmbeddedPiAgentParams = {
   lane?: string;
   enqueue?: typeof enqueueCommand;
   extraSystemPrompt?: string;
+  /** Internal role selected by the opt-in cost router; not persisted in session config. */
+  costRoutingRole?: import("../../model-routing.js").CostRoutingRole;
+  /** The cost router owns the terminal event while a direct worker may fall back. */
+  modelRoutingFallback?: boolean;
   inputProvenance?: InputProvenance;
   streamParams?: AgentStreamParams;
   ownerNumbers?: string[];
