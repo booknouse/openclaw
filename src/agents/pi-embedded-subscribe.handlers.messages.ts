@@ -17,6 +17,7 @@ import {
   formatReasoningMessage,
   promoteThinkingTagsToBlocks,
 } from "./pi-embedded-utils.js";
+import { observeProcessPollUsage } from "./process-observation.js";
 
 const stripTrailingDirective = (text: string): string => {
   const openIndex = text.lastIndexOf("[[");
@@ -268,6 +269,7 @@ export function handleMessageEnd(
 
   const assistantMessage = msg;
   ctx.noteLastAssistant(assistantMessage);
+  observeProcessPollUsage(assistantMessage, ctx.params.runId, ctx.params.sessionKey);
   ctx.recordAssistantUsage((assistantMessage as { usage?: unknown }).usage);
   if (ctx.state.deterministicApprovalPromptSent) {
     return;

@@ -10,6 +10,7 @@ import { createProcessSessionFixture } from "./bash-process-registry.test-helper
 import { createProcessTool } from "./bash-tools.process.js";
 
 afterEach(() => {
+  vi.useRealTimers();
   resetProcessRegistryForTests();
   resetDiagnosticSessionStateForTest();
 });
@@ -87,7 +88,6 @@ test("process poll waits for completion when timeout is provided", async () => {
     sessionId: "sess",
     callId: "toolcall",
     timeout: 2000,
-    assertUnresolvedAtMs: 200,
     advanceMs: 100,
   });
 });
@@ -101,40 +101,35 @@ test("process poll accepts string timeout values", async () => {
   });
 });
 
-test("process poll exposes adaptive retryInMs for repeated no-output polls", async () => {
+test("process poll coalesces concurrent no-output polls into one wait", async () => {
+  vi.useFakeTimers();
   const sessionId = "sess-retry";
   const { processTool } = createProcessSessionHarness(sessionId);
-
-  const polls = await Promise.all([
-    pollSession(processTool, "toolcall-1", sessionId),
-    pollSession(processTool, "toolcall-2", sessionId),
-    pollSession(processTool, "toolcall-3", sessionId),
-    pollSession(processTool, "toolcall-4", sessionId),
-    pollSession(processTool, "toolcall-5", sessionId),
-  ]);
-
-  expect(polls.map((poll) => retryMs(poll))).toEqual([5000, 10000, 30000, 60000, 60000]);
+  const pending = Promise.all(
+    [1, 2, 3, 4, 5].map((n) => pollSession(processTool, `call-${n}`, sessionId)),
+  );
+  await vi.advanceTimersByTimeAsync(5000);
+  const polls = await pending;
+  expect(polls.map(retryMs)).toEqual([10000, 10000, 10000, 10000, 10000]);
+  expect(polls.filter((p) => (p.details as { coalesced?: boolean }).coalesced)).toHaveLength(4);
 });
 
 test("process poll resets retryInMs when output appears and clears on completion", async () => {
+  vi.useFakeTimers();
   const sessionId = "sess-reset";
   const { processTool, session } = createProcessSessionHarness(sessionId);
-
-  const poll1 = await pollSession(processTool, "toolcall-1", sessionId);
-  const poll2 = await pollSession(processTool, "toolcall-2", sessionId);
-  expect(retryMs(poll1)).toBe(5000);
-  expect(retryMs(poll2)).toBe(10000);
-
+  const first = pollSession(processTool, "first", sessionId);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(retryMs(await first)).toBe(10000);
+  const second = pollSession(processTool, "second", sessionId);
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(retryMs(await second)).toBe(30000);
+  const next = pollSession(processTool, "output", sessionId);
   appendOutput(session, "stdout", "step complete\n");
-  const pollWithOutput = await pollSession(processTool, "toolcall-output", sessionId);
-  expect(retryMs(pollWithOutput)).toBe(5000);
-
+  await vi.advanceTimersByTimeAsync(100);
+  expect(retryMs(await next)).toBe(5000);
   markExited(session, 0, null, "completed");
-  const pollCompleted = await pollSession(processTool, "toolcall-completed", sessionId);
-  expect(pollStatus(pollCompleted)).toBe("completed");
-  expect(retryMs(pollCompleted)).toBeUndefined();
-
-  const pollFinished = await pollSession(processTool, "toolcall-finished", sessionId);
-  expect(pollStatus(pollFinished)).toBe("completed");
-  expect(retryMs(pollFinished)).toBeUndefined();
+  const done = await pollSession(processTool, "finished", sessionId);
+  expect(pollStatus(done)).toBe("completed");
+  expect(retryMs(done)).toBeUndefined();
 });

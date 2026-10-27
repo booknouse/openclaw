@@ -2,6 +2,17 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.10
+
+### Fixes
+
+- Tools/process: enforce adaptive waits for quiet background jobs, coalesce simultaneous polls, return promptly on output/exit/cancellation, and expose polling/usage diagnostics.
+- Agents/exec: wake existing non-periodic sessions on task completion, recognize completion/failure events, and suppress a redundant wake after the caller observes exit.
+
+### Upgrade notes
+
+- Quiet successful background commands now notify on exit by default. Set `tools.exec.notifyOnExitEmptySuccess: false` to retain silent completion; the global heartbeat pause is still respected. Process polling may wait 5–60 seconds when there is no new output. Task/notification state remains process-local.
+
 ## 2026.3.13-cortex.9
 
 ### Fixes

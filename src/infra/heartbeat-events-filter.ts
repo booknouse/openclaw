@@ -84,7 +84,9 @@ function isHeartbeatNoiseEvent(evt: string): boolean {
 }
 
 export function isExecCompletionEvent(evt: string): boolean {
-  return evt.toLowerCase().includes("exec finished");
+  return (
+    evt.toLowerCase().includes("exec finished") || /^Exec (?:completed|failed)\b/i.test(evt.trim())
+  );
 }
 
 // Returns true when a system event should be treated as real cron reminder content.

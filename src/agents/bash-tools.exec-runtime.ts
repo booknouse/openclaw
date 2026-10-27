@@ -10,6 +10,7 @@ import { scopedHeartbeatWakeOptions } from "../routing/session-key.js";
 import type { ProcessSession } from "./bash-process-registry.js";
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
+import { observeProcess } from "./process-observation.js";
 export { applyPathPrepend, findPathKey, normalizePathPrepend } from "../infra/path-prepend.js";
 export {
   normalizeExecAsk,
@@ -200,7 +201,12 @@ export function applyShellPath(env: Record<string, string>, shellPath?: string |
 }
 
 function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "failed") {
-  if (!session.backgrounded || !session.notifyOnExit || session.exitNotified) {
+  if (
+    !session.backgrounded ||
+    !session.notifyOnExit ||
+    session.exitNotified ||
+    session.exitObserved
+  ) {
     return;
   }
   const sessionKey = session.sessionKey?.trim();
@@ -220,7 +226,8 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
   const summary = output
     ? `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel}) :: ${output}`
     : `Exec ${status} (${session.id.slice(0, 8)}, ${exitLabel})`;
-  enqueueSystemEvent(summary, { sessionKey });
+  enqueueSystemEvent(summary, { sessionKey, contextKey: `exec:${session.id}:exit` });
+  observeProcess("process.notification.queued", { processId: session.id, sessionKey, status });
   requestHeartbeatNow(
     scopedHeartbeatWakeOptions(sessionKey, { reason: `exec:${session.id}:exit` }),
   );

@@ -117,3 +117,25 @@ export function hasSystemEvents(sessionKey: string) {
 export function resetSystemEventsForTest() {
   queues.clear();
 }
+
+/** Remove an acknowledged completion without consuming unrelated system events. */
+export function discardSystemEvent(sessionKey: string, contextKey: string): boolean {
+  const key = requireSessionKey(sessionKey);
+  const entry = queues.get(key);
+  if (!entry) {
+    return false;
+  }
+  const before = entry.queue.length;
+  entry.queue = entry.queue.filter((event) => event.contextKey !== normalizeContextKey(contextKey));
+  if (entry.queue.length === before) {
+    return false;
+  }
+  const last = entry.queue.at(-1);
+  if (!last) {
+    queues.delete(key);
+  } else {
+    entry.lastText = last.text;
+    entry.lastContextKey = last.contextKey ?? null;
+  }
+  return true;
+}

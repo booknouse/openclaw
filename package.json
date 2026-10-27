@@ -1,6 +1,6 @@
 {
   "name": "openclaw",
-  "version": "2026.3.13-cortex.9",
+  "version": "2026.3.13-cortex.10",
   "description": "Multi-channel AI gateway with extensible messaging integrations",
   "keywords": [],
   "homepage": "https://github.com/openclaw/openclaw#readme",
@@ -24,6 +24,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "openclaw.mjs",
+    "scripts/process-wait-report.mjs",
     "README-header.png",
     "README.md",
     "assets/",

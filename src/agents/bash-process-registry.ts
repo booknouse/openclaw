@@ -1,4 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { discardSystemEvent } from "../infra/system-events.js";
+import { observeProcess } from "./process-observation.js";
 import { createSessionSlug as createSessionSlugId } from "./session-slug.js";
 
 const DEFAULT_JOB_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -33,6 +35,7 @@ export interface ProcessSession {
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   exitNotified?: boolean;
+  exitObserved?: boolean;
   child?: ChildProcessWithoutNullStreams;
   stdin?: SessionStdin;
   pid?: number;
@@ -56,6 +59,8 @@ export interface ProcessSession {
 
 export interface FinishedSession {
   id: string;
+  sessionKey?: string;
+  exitObserved?: boolean;
   command: string;
   scopeKey?: string;
   startedAt: number;
@@ -198,6 +203,8 @@ function moveToFinished(session: ProcessSession, status: ProcessStatus) {
   finishedSessions.set(session.id, {
     id: session.id,
     command: session.command,
+    sessionKey: session.sessionKey,
+    exitObserved: session.exitObserved,
     scopeKey: session.scopeKey,
     startedAt: session.startedAt,
     endedAt: Date.now(),
@@ -306,4 +313,23 @@ function stopSweeper() {
   }
   clearInterval(sweeper);
   sweeper = null;
+}
+
+// A tool caller that already received the exit result does not need another model wake.
+export function acknowledgeProcessExit(session: {
+  id: string;
+  sessionKey?: string;
+  exitObserved?: boolean;
+}) {
+  session.exitObserved = true;
+  const finished = finishedSessions.get(session.id);
+  if (finished) {
+    finished.exitObserved = true;
+  }
+  if (session.sessionKey && discardSystemEvent(session.sessionKey, `exec:${session.id}:exit`)) {
+    observeProcess("process.notification.observed", {
+      processId: session.id,
+      sessionKey: session.sessionKey,
+    });
+  }
 }

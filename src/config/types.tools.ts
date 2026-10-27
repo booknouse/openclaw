@@ -254,7 +254,7 @@ export type ExecToolConfig = {
   notifyOnExit?: boolean;
   /**
    * Also emit success exit notifications when a backgrounded exec has no output.
-   * Default false to reduce context noise.
+   * Default true so quiet jobs can resume their waiting conversation.
    */
   notifyOnExitEmptySuccess?: boolean;
   /** apply_patch subtool configuration (experimental). */

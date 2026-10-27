@@ -7,6 +7,8 @@ import {
 } from "../agents/agent-scope.js";
 import { appendCronStyleCurrentTimeLine } from "../agents/current-time.js";
 import { resolveEffectiveMessagesConfig } from "../agents/identity.js";
+import { isEmbeddedPiRunActive } from "../agents/pi-embedded-runner/runs.js";
+import { observeProcess } from "../agents/process-observation.js";
 import { DEFAULT_HEARTBEAT_FILENAME } from "../agents/workspace.js";
 import { resolveHeartbeatReplyPayload } from "../auto-reply/heartbeat-reply-payload.js";
 import {
@@ -497,6 +499,13 @@ function resolveHeartbeatReasonFlags(reason?: string): HeartbeatReasonFlags {
   };
 }
 
+function isScopedExecCompletion(
+  reason: string | undefined,
+  sessionKey: string | undefined,
+): boolean {
+  return Boolean(sessionKey?.trim() && resolveHeartbeatReasonKind(reason) === "exec-event");
+}
+
 async function resolveHeartbeatPreflight(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -624,15 +633,16 @@ export async function runHeartbeatOnce(opts: {
   if (!areHeartbeatsEnabled()) {
     return { status: "skipped", reason: "disabled" };
   }
-  if (!isHeartbeatEnabledForAgent(cfg, agentId)) {
+  const execCompletion = isScopedExecCompletion(opts.reason, opts.sessionKey);
+  if (!execCompletion && !isHeartbeatEnabledForAgent(cfg, agentId)) {
     return { status: "skipped", reason: "disabled" };
   }
-  if (!resolveHeartbeatIntervalMs(cfg, undefined, heartbeat)) {
+  if (!execCompletion && !resolveHeartbeatIntervalMs(cfg, undefined, heartbeat)) {
     return { status: "skipped", reason: "disabled" };
   }
 
   const startedAt = opts.deps?.nowMs?.() ?? Date.now();
-  if (!isWithinActiveHours(cfg, heartbeat, startedAt)) {
+  if (!execCompletion && !isWithinActiveHours(cfg, heartbeat, startedAt)) {
     return { status: "skipped", reason: "quiet-hours" };
   }
 
@@ -658,6 +668,23 @@ export async function runHeartbeatOnce(opts: {
     return { status: "skipped", reason: preflight.skipReason };
   }
   const { entry, sessionKey, storePath } = preflight.session;
+  if (execCompletion) {
+    // Explicit completions may wake non-periodic agents, but must never fall back
+    // to another session or recreate a deleted/aborted conversation.
+    if (!entry?.sessionId || sessionKey !== opts.sessionKey?.trim() || entry.abortedLastRun) {
+      return { status: "skipped", reason: "exec-session-unavailable" };
+    }
+    if (isEmbeddedPiRunActive(entry.sessionId)) {
+      return { status: "skipped", reason: "requests-in-flight" };
+    }
+    if (
+      !preflight.pendingEventEntries.some(
+        (event) => event.contextKey?.startsWith("exec:") && isExecCompletionEvent(event.text),
+      )
+    ) {
+      return { status: "skipped", reason: "exec-event-consumed" };
+    }
+  }
   const previousUpdatedAt = entry?.updatedAt;
   const delivery = resolveHeartbeatDeliveryTarget({ cfg, entry, heartbeat });
   const heartbeatAccountId = heartbeat?.accountId?.trim();
@@ -1128,7 +1155,7 @@ export function startHeartbeatRunner(opts: {
         reason: "disabled",
       } satisfies HeartbeatRunResult;
     }
-    if (state.agents.size === 0) {
+    if (state.agents.size === 0 && !isScopedExecCompletion(params?.reason, params?.sessionKey)) {
       return {
         status: "skipped",
         reason: "disabled",
@@ -1147,6 +1174,30 @@ export function startHeartbeatRunner(opts: {
       const targetAgentId = requestedAgentId ?? resolveAgentIdFromSessionKey(requestedSessionKey);
       const targetAgent = state.agents.get(targetAgentId);
       if (!targetAgent) {
+        if (
+          isScopedExecCompletion(reason, requestedSessionKey) &&
+          (!requestedAgentId ||
+            requestedAgentId === resolveAgentIdFromSessionKey(requestedSessionKey)) &&
+          (targetAgentId === resolveDefaultAgentId(state.cfg) ||
+            state.cfg.agents?.list?.some((agent) => agent.id === targetAgentId))
+        ) {
+          const result = await runOnce({
+            cfg: state.cfg,
+            agentId: targetAgentId,
+            heartbeat: resolveHeartbeatConfig(state.cfg, targetAgentId),
+            reason,
+            sessionKey: requestedSessionKey,
+            deps: { runtime: state.runtime },
+          });
+          if (result.status !== "skipped" || result.reason !== "requests-in-flight") {
+            observeProcess("process.notification.wake", {
+              sessionKey: requestedSessionKey,
+              ...result,
+            });
+          }
+          scheduleNext();
+          return result;
+        }
         scheduleNext();
         return { status: "skipped", reason: "disabled" };
       }
@@ -1159,6 +1210,12 @@ export function startHeartbeatRunner(opts: {
           sessionKey: requestedSessionKey,
           deps: { runtime: state.runtime },
         });
+        if (
+          isScopedExecCompletion(reason, requestedSessionKey) &&
+          (res.status !== "skipped" || res.reason !== "requests-in-flight")
+        ) {
+          observeProcess("process.notification.wake", { sessionKey: requestedSessionKey, ...res });
+        }
         if (res.status !== "skipped" || res.reason !== "disabled") {
           advanceAgentSchedule(targetAgent, now);
         }

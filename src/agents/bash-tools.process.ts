@@ -7,7 +7,6 @@ import { getProcessSupervisor } from "../process/supervisor/index.js";
 import {
   type ProcessSession,
   deleteSession,
-  drainSession,
   getFinishedSession,
   getSession,
   listFinishedSessions,
@@ -15,8 +14,10 @@ import {
   markExited,
   setJobTtlMs,
 } from "./bash-process-registry.js";
+import { acknowledgeProcessExit } from "./bash-process-registry.js";
 import { deriveSessionName, pad, sliceLogLines, truncateMiddle } from "./bash-tools.shared.js";
-import { recordCommandPoll, resetCommandPollCount } from "./command-poll-backoff.js";
+import { resetCommandPollCount } from "./command-poll-backoff.js";
+import { pollProcess } from "./process-poll.js";
 import { encodeKeySequence, encodePaste } from "./pty-keys.js";
 
 export type ProcessToolDefaults = {
@@ -65,7 +66,8 @@ const processSchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Log length" })),
   timeout: Type.Optional(
     Type.Number({
-      description: "For poll: wait up to this many milliseconds before returning",
+      description:
+        "For poll: requested wait in milliseconds; quiet running tasks enforce adaptive 5–60s waits. Output, exit or cancellation returns early.",
       minimum: 0,
     }),
   ),
@@ -96,15 +98,6 @@ function failText(text: string): AgentToolResult<unknown> {
     ],
     details: { status: "failed" },
   };
-}
-
-function recordPollRetrySuggestion(sessionId: string, hasNewOutput: boolean): number | undefined {
-  try {
-    const sessionState = getDiagnosticSessionState({ sessionId });
-    return recordCommandPoll(sessionState, sessionId, hasNewOutput);
-  } catch {
-    return undefined;
-  }
 }
 
 function resetPollRetrySuggestion(sessionId: string): void {
@@ -294,6 +287,7 @@ export function createProcessTool(
         case "poll": {
           if (!scopedSession) {
             if (scopedFinished) {
+              acknowledgeProcessExit(scopedFinished);
               resetPollRetrySuggestion(params.sessionId);
               return {
                 content: [
@@ -326,27 +320,16 @@ export function createProcessTool(
           if (!scopedSession.backgrounded) {
             return failText(`Session ${params.sessionId} is not backgrounded.`);
           }
-          const pollWaitMs = resolvePollWaitMs(params.timeout);
-          if (pollWaitMs > 0 && !scopedSession.exited) {
-            const deadline = Date.now() + pollWaitMs;
-            while (!scopedSession.exited && Date.now() < deadline) {
-              await new Promise((resolve) =>
-                setTimeout(resolve, Math.max(0, Math.min(250, deadline - Date.now()))),
-              );
-            }
-          }
-          const { stdout, stderr } = drainSession(scopedSession);
-          const exited = scopedSession.exited;
-          const exitCode = scopedSession.exitCode ?? 0;
-          const exitSignal = scopedSession.exitSignal ?? undefined;
+          const snapshot = await pollProcess(
+            scopedSession,
+            resolvePollWaitMs(params.timeout),
+            _toolCallId,
+            _signal,
+          );
+          const { stdout, stderr, exited, exitSignal, retryInMs } = snapshot;
+          const exitCode = snapshot.exitCode ?? 0;
           if (exited) {
-            const status = exitCode === 0 && exitSignal == null ? "completed" : "failed";
-            markExited(
-              scopedSession,
-              scopedSession.exitCode ?? null,
-              scopedSession.exitSignal ?? null,
-              status,
-            );
+            acknowledgeProcessExit(scopedSession);
           }
           const status = exited
             ? exitCode === 0 && exitSignal == null
@@ -354,13 +337,6 @@ export function createProcessTool(
               : "failed"
             : "running";
           const output = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join("\n").trim();
-          const hasNewOutput = output.length > 0;
-          const retryInMs = exited
-            ? undefined
-            : recordPollRetrySuggestion(params.sessionId, hasNewOutput);
-          if (exited) {
-            resetPollRetrySuggestion(params.sessionId);
-          }
           return {
             content: [
               {
@@ -378,7 +354,9 @@ export function createProcessTool(
               status,
               sessionId: params.sessionId,
               exitCode: exited ? exitCode : undefined,
-              aggregated: scopedSession.aggregated,
+              aggregated: snapshot.aggregated,
+              waitedMs: snapshot.waitedMs,
+              coalesced: snapshot.coalesced,
               name: deriveSessionName(scopedSession.command),
               ...(typeof retryInMs === "number" ? { retryInMs } : {}),
             },
