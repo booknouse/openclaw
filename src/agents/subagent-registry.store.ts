@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
@@ -117,7 +119,10 @@ export function loadSubagentRegistryFromDisk(): Map<string, SubagentRunRecord> {
   return out;
 }
 
-export function saveSubagentRegistryToDisk(runs: Map<string, SubagentRunRecord>) {
+export function saveSubagentRegistryToDisk(
+  runs: Map<string, SubagentRunRecord>,
+  options?: { atomic?: boolean },
+) {
   const pathname = resolveSubagentRegistryPath();
   const serialized: Record<string, PersistedSubagentRunRecord> = {};
   for (const [runId, entry] of runs.entries()) {
@@ -127,5 +132,39 @@ export function saveSubagentRegistryToDisk(runs: Map<string, SubagentRunRecord>)
     version: REGISTRY_VERSION,
     runs: serialized,
   };
-  saveJsonFile(pathname, out);
+  if (!options?.atomic) {
+    saveJsonFile(pathname, out);
+    return;
+  }
+  fs.mkdirSync(path.dirname(pathname), { recursive: true, mode: 0o700 });
+  const temporary = `${pathname}.${process.pid}.${randomUUID()}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(fd, `${JSON.stringify(out, null, 2)}\n`, "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(temporary, pathname);
+    // Directory fsync is unsupported on some platforms; the file replacement is still atomic.
+    try {
+      const directory = fs.openSync(path.dirname(pathname), "r");
+      try {
+        fs.fsyncSync(directory);
+      } finally {
+        fs.closeSync(directory);
+      }
+    } catch {
+      /* Best effort directory durability. */
+    }
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      /* Renamed or already removed. */
+    }
+  }
 }

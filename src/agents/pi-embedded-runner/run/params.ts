@@ -117,6 +117,7 @@ export type RunEmbeddedPiAgentParams = {
   extraSystemPrompt?: string;
   /** Internal role selected by the opt-in cost router; not persisted in session config. */
   costRoutingRole?: import("../../model-routing.js").CostRoutingRole;
+  costRoutingState?: import("../../model-routing.js").CostRoutingExecutionState;
   /** The cost router owns the terminal event while a direct worker may fall back. */
   modelRoutingFallback?: boolean;
   inputProvenance?: InputProvenance;

@@ -120,6 +120,8 @@ export type CliBackendConfig = {
 export type AgentDefaultsConfig = {
   /** Opt-in cost routing using model.primary and subagents.model; identical models bypass it. */
   modelRouting?: "off" | "cost";
+  /** Optional cost-only task classifier (provider/model or alias); never an execution model. */
+  modelRoutingClassifier?: string;
   /** Primary model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */
   model?: AgentModelConfig;
   /** Optional image-capable model and fallbacks (provider/model). Accepts string or {primary,fallbacks}. */

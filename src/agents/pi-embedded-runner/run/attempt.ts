@@ -51,6 +51,11 @@ import {
   listChannelSupportedActions,
   resolveChannelMessageToolHints,
 } from "../../channel-tools.js";
+import {
+  COST_CONTINUATION_SOURCE,
+  ensureCostContinuationAllowed,
+  guardCostContinuationTools,
+} from "../../cost-task-protocol.js";
 import { ensureCustomApiRegistered } from "../../custom-api-registry.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
@@ -1484,6 +1489,13 @@ export async function runEmbeddedAttempt(
     let yieldAbortSettled: Promise<void> | null = null;
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
+    let costContinuationAllowed: (() => boolean) | undefined;
+    if (params.inputProvenance?.sourceTool === COST_CONTINUATION_SOURCE) {
+      const registry = await import("../../subagent-registry-runtime.js");
+      costContinuationAllowed = () =>
+        registry.isCostTaskContinuationAllowed(params.runId, params.sessionKey ?? "");
+      ensureCostContinuationAllowed(costContinuationAllowed);
+    }
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({
@@ -1539,16 +1551,22 @@ export async function runEmbeddedAttempt(
           },
         });
     const costModels =
-      params.costRoutingRole === "orchestrator" && params.config
+      (params.costRoutingRole === "orchestrator" || params.costRoutingRole === "primary") &&
+      params.config
         ? resolveCostRoutingModels(params.config, sessionAgentId)
         : undefined;
     const routedTools = applyCostRoutingToolPolicy(
-      toolsRaw,
+      guardCostContinuationTools(toolsRaw, costContinuationAllowed),
       params.costRoutingRole,
       costModels
         ? {
             workerModel: `${costModels.worker.provider}/${costModels.worker.model}`,
+            primaryModel: `${costModels.primary.provider}/${costModels.primary.model}`,
+            requesterSessionKey: params.sessionKey,
             agentId: sessionAgentId,
+            agentDir,
+            config: params.config,
+            executionState: params.costRoutingState,
           }
         : undefined,
     );
@@ -2538,6 +2556,7 @@ export async function runEmbeddedAttempt(
 
           // Only pass images option if there are actually images to pass
           // This avoids potential issues with models that don't expect the images parameter
+          ensureCostContinuationAllowed(costContinuationAllowed);
           if (imageResult.images.length > 0) {
             await abortable(activeSession.prompt(effectivePrompt, { images: imageResult.images }));
           } else {

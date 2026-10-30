@@ -13,6 +13,7 @@ import {
 } from "../routing/session-key.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resolveAgentConfig } from "./agent-scope.js";
+import { COST_TASK_RECEIPT_PROMPT, getCostTaskSpawnContext } from "./cost-task-protocol.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
 import { resolveSandboxRuntimeStatus } from "./sandbox/runtime-status.js";
@@ -514,7 +515,7 @@ export async function spawnSubagentDirect(
     requesterOrigin,
     childSessionKey,
     label: label || undefined,
-    task,
+    task: getCostTaskSpawnContext() ? "the task in the [Subagent Task] message" : task,
     acpEnabled: cfg.acp?.enabled !== false && !childRuntime.sandboxed,
     childDepth,
     maxSpawnDepth,
@@ -601,6 +602,10 @@ export async function spawnSubagentDirect(
     };
   }
 
+  if (getCostTaskSpawnContext()) {
+    getCostTaskSpawnContext()?.onChildSession?.(childSessionKey);
+    childSystemPrompt = `${childSystemPrompt}\n${COST_TASK_RECEIPT_PROMPT}`;
+  }
   const childIdem = crypto.randomUUID();
   let childRunId: string = childIdem;
   try {
@@ -704,6 +709,9 @@ export async function spawnSubagentDirect(
       cleanup,
       label: label || undefined,
       model: resolvedModel,
+      ...(getCostTaskSpawnContext()
+        ? { costSystemPrompt: childSystemPrompt, costThinking: thinkingOverride }
+        : {}),
       workspaceDir: spawnedMetadata.workspaceDir,
       runTimeoutSeconds,
       expectsCompletionMessage,

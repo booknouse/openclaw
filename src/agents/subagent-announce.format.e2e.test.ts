@@ -303,6 +303,44 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("completed successfully");
   });
 
+  it("reports a cost business partial instead of successful completion and hides the raw receipt", async () => {
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "cost-partial",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      ...defaultOutcomeAnnounce,
+      costTask: { deadlineAt: Date.now() + 60000, continuations: 1 },
+      task: "SYNTHETIC_LONG_TASK_BODY " + "x".repeat(5000),
+      roundOneReply:
+        'Only backup completed.\n<cost_task_result>{"status":"partial","remaining":["Implement layout"],"blocker":null,"pendingRemoteTasks":[],"safeToResume":true}</cost_task_result>',
+    });
+    const request = agentSpy.mock.calls[0][0];
+    const text = String(request.params?.message);
+    expect(text).toContain("partial; task not completed");
+    expect(text).toContain("Only backup completed");
+    expect(text).not.toContain("completed successfully");
+    expect(text).not.toContain("<cost_task_result>");
+    expect(text).toContain("Do not spawn a replacement");
+    expect(text).toContain("task: Cost task");
+    expect(text).not.toContain("SYNTHETIC_LONG_TASK_BODY");
+  });
+
+  it("does not infer cost task completion from an unstructured claim", async () => {
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "cost-unverified",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      ...defaultOutcomeAnnounce,
+      costTask: { deadlineAt: Date.now() + 60000, continuations: 0 },
+      roundOneReply: "Everything is complete.",
+    });
+    const text = String(agentSpy.mock.calls[0][0].params?.message);
+    expect(text).toContain("completion unverified");
+    expect(text).not.toContain("completed successfully");
+  });
+
   it("uses child-run announce identity for direct idempotency", async () => {
     await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:worker",

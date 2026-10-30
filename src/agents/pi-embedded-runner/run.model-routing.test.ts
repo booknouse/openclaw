@@ -1,6 +1,7 @@
 import "./run.overflow-compaction.mocks.shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { classifyCostTask } from "../cost-task-classifier.js";
 import { FailoverError } from "../failover-error.js";
 import { getApiKeyForModel } from "../model-auth.js";
 import { runWithModelFallback } from "../model-fallback.js";
@@ -42,12 +43,14 @@ const base = {
   provider: "ddww",
   model: "sol",
 };
+vi.mock("../cost-task-classifier.js", () => ({ classifyCostTask: vi.fn() }));
 
 describe("embedded cost-routing integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGlobalHookRunner.hasHooks.mockReturnValue(false);
     mockedRunEmbeddedAttempt.mockReset().mockResolvedValue(makeAttemptResult());
+    vi.mocked(classifyCostTask).mockReset().mockResolvedValue("secondary");
   });
   it("makes only one worker model attempt for a simple request", async () => {
     await runEmbeddedPiAgent({ ...base, prompt: "翻译成中文：Good morning." });
@@ -92,16 +95,21 @@ describe("embedded cost-routing integration", () => {
       expect.objectContaining({ profileId: "primary-profile" }),
     );
   });
-  it("keeps a complex request on the primary with the orchestration role", async () => {
+  it("executes an advanced request in the current primary session with no primary child", async () => {
+    vi.mocked(classifyCostTask).mockResolvedValue("primary");
     await runEmbeddedPiAgent({ ...base, prompt: "Investigate the incident and fix the code" });
     expect(runWithModelFallback).not.toHaveBeenCalled();
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
       expect.objectContaining({
         provider: "ddww",
         modelId: "sol",
-        costRoutingRole: "orchestrator",
+        costRoutingRole: "primary",
+        sessionId: base.sessionId,
+        sessionKey: base.sessionKey,
       }),
     );
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(classifyCostTask).toHaveBeenCalledTimes(1);
   });
   it("makes an equal-model configuration take the original single attempt", async () => {
     const cfg = structuredClone(config);

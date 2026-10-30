@@ -37,7 +37,7 @@ import {
   type ResolvedProviderAuth,
 } from "../model-auth.js";
 import { runWithModelFallback } from "../model-fallback.js";
-import { resolveCostRoutingPlan } from "../model-routing.js";
+import { resolveCostRoutingExecutionPlan } from "../model-routing.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
@@ -261,16 +261,27 @@ function buildErrorAgentMeta(params: {
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
-  const plan = resolveCostRoutingPlan(params);
+  const routingStartedAt = Date.now();
+  const plan = await resolveCostRoutingExecutionPlan(params);
   if (!plan) {
     return runWithOverflowRecovery(params, runEmbeddedPiAgentInner);
   }
   log.info(
     `model-routing run=${params.runId} role=${plan.role} primary=${plan.primary.provider}/${plan.primary.model} worker=${plan.worker.provider}/${plan.worker.model}`,
   );
-  if (plan.role === "orchestrator") {
+  params.abortSignal?.throwIfAborted();
+  const remainingTimeoutMs = params.timeoutMs - (Date.now() - routingStartedAt);
+  if (remainingTimeoutMs <= 0) {
+    throw new Error("Cost-routed run timed out during classification");
+  }
+  if (plan.role !== "direct") {
     return runWithOverflowRecovery(
-      { ...params, costRoutingRole: "orchestrator" },
+      {
+        ...params,
+        timeoutMs: remainingTimeoutMs,
+        costRoutingRole: plan.role,
+        costRoutingState: plan.executionState ?? params.costRoutingState ?? { spawns: new Map() },
+      },
       runEmbeddedPiAgentInner,
     );
   }
@@ -920,6 +931,7 @@ async function runEmbeddedPiAgentInner(
               modelResolveOverride?.providerOverride || modelResolveOverride?.modelOverride
                 ? undefined
                 : params.costRoutingRole,
+            costRoutingState: params.costRoutingState,
             memoryFlushWritePath: params.memoryFlushWritePath,
             messageChannel: params.messageChannel,
             messageProvider: params.messageProvider,

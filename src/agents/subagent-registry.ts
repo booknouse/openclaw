@@ -16,6 +16,15 @@ import { onAgentEvent } from "../infra/agent-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { defaultRuntime } from "../runtime.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
+import { resolveAgentConfig } from "./agent-scope.js";
+import { continueCostTaskOnce } from "./cost-task-continuation.js";
+import {
+  COST_CONTINUATION_SOURCE,
+  getCostTaskSpawnContext,
+  type CostTaskState,
+} from "./cost-task-protocol.js";
+import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { ensureRuntimePluginsLoaded } from "./runtime-plugins.js";
 import { resetAnnounceQueuesForTests } from "./subagent-announce-queue.js";
 import {
@@ -56,6 +65,7 @@ import {
   persistSubagentRunsToDisk,
   restoreSubagentRunsFromDisk,
 } from "./subagent-registry-state.js";
+import { saveSubagentRegistryToDisk } from "./subagent-registry.store.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
@@ -133,6 +143,14 @@ function logAnnounceGiveUp(entry: SubagentRunRecord, reason: "retry-limit" | "ex
 }
 
 function persistSubagentRuns() {
+  if ([...subagentRuns.values()].some((entry) => entry.costTask)) {
+    try {
+      saveSubagentRegistryToDisk(subagentRuns, { atomic: true });
+    } catch {
+      /* No unsafe replay on persistence failure. */
+    }
+    return;
+  }
   persistSubagentRunsToDisk(subagentRuns);
 }
 
@@ -448,6 +466,251 @@ async function refreshFrozenResultFromSession(sessionKey: string): Promise<boole
   return changed;
 }
 
+function costPolicyEnabled(cfg: ReturnType<typeof loadConfig>, requesterKey: string): boolean {
+  const agentId = resolveAgentIdFromSessionKey(requesterKey);
+  return (
+    (resolveAgentConfig(cfg, agentId)?.modelRouting ?? cfg.agents?.defaults?.modelRouting) ===
+    "cost"
+  );
+}
+
+function costSessionEntry(
+  cfg: ReturnType<typeof loadConfig>,
+  key: string,
+): SessionEntry | undefined {
+  return findSessionEntryByKey(
+    loadSessionStore(
+      resolveStorePath(cfg.session?.store, {
+        agentId: resolveAgentIdFromSessionKey(key),
+      }),
+    ),
+    key,
+  );
+}
+
+function unchangedCostSession(
+  cfg: ReturnType<typeof loadConfig>,
+  entry: SubagentRunRecord,
+): SessionEntry | undefined {
+  const parent = costSessionEntry(cfg, entry.requesterSessionKey);
+  const child = costSessionEntry(cfg, entry.childSessionKey);
+  if (
+    !entry.costTask?.sessionId ||
+    !entry.costTask.requesterSessionId ||
+    parent?.sessionId !== entry.costTask.requesterSessionId ||
+    child?.sessionId !== entry.costTask.sessionId ||
+    parent.abortedLastRun ||
+    child.abortedLastRun ||
+    child.spawnedBy !== entry.requesterSessionKey ||
+    (entry.workspaceDir && child.spawnedWorkspaceDir !== entry.workspaceDir)
+  ) {
+    return undefined;
+  }
+  const model = child.modelOverride ?? child.model;
+  const provider = child.providerOverride ?? child.modelProvider;
+  const current = model?.includes("/")
+    ? model
+    : provider && model
+      ? `${provider}/${model}`
+      : undefined;
+  return entry.model && current === entry.model ? child : undefined;
+}
+
+export function isCostTaskContinuationAllowed(runId: string, childSessionKey: string): boolean {
+  const entry = subagentRuns.get(runId);
+  return (
+    !!entry &&
+    entry.childSessionKey === childSessionKey &&
+    entry.costTask?.continuations === 1 &&
+    !entry.costTask.cancelled &&
+    typeof entry.costTask.systemPrompt === "string" &&
+    entry.costTask.systemPrompt.length > 0 &&
+    !entry.endedAt &&
+    entry.costTask.deadlineAt > Date.now() &&
+    costPolicyEnabled(loadConfig(), entry.requesterSessionKey) &&
+    !!unchangedCostSession(loadConfig(), entry)
+  );
+}
+
+function dispatchUnconfirmedReply(runId: string): string {
+  return (
+    "The continuation could not be confirmed. Automatic retry is disabled. Inspect the existing run and remote state before repeating any writes.\n" +
+    `<cost_task_result>${JSON.stringify({ status: "blocked", remaining: ["Verify existing execution state"], blocker: "Continuation dispatch unconfirmed", pendingRemoteTasks: [runId], safeToResume: false })}</cost_task_result>`
+  );
+}
+
+async function cancelCostContinuation(runId: string, silently = true): Promise<void> {
+  const entry = subagentRuns.get(runId);
+  if (!entry?.costTask) {
+    return;
+  }
+  entry.costTask.cancelled = true;
+  if (silently && !cancelReassignedCostTask(entry)) {
+    markSubagentRunTerminated({ runId, reason: "killed" });
+  }
+  persistSubagentRuns();
+  const { abortEmbeddedPiRun } = await import("./cost-task.runtime.js");
+  if (entry.costTask.sessionId) {
+    abortEmbeddedPiRun(entry.costTask.sessionId);
+  }
+  const child = costSessionEntry(loadConfig(), entry.childSessionKey);
+  if (
+    child?.sessionId !== entry.costTask.sessionId ||
+    child?.spawnedBy !== entry.requesterSessionKey
+  ) {
+    return;
+  }
+  try {
+    await callGateway({
+      method: "chat.abort",
+      params: { sessionKey: entry.childSessionKey },
+      timeoutMs: 3_000,
+    });
+  } catch {
+    // The persisted cancellation flag also denies late continuation tool execution.
+  }
+}
+
+async function maybeContinueCostTask(entry: SubagentRunRecord): Promise<boolean> {
+  if (!entry.costTask) {
+    return false;
+  }
+  const cfg = loadConfig();
+  if (!costPolicyEnabled(cfg, entry.requesterSessionKey)) {
+    return false;
+  }
+  return continueCostTaskOnce({
+    entry,
+    now: Date.now,
+    isCurrent: () =>
+      subagentRuns.get(entry.runId) === entry &&
+      !entry.costTask?.cancelled &&
+      costPolicyEnabled(loadConfig(), entry.requesterSessionKey) &&
+      !!unchangedCostSession(loadConfig(), entry) &&
+      ![...subagentRuns.values()].some(
+        (other) =>
+          other.runId !== entry.runId &&
+          other.childSessionKey === entry.childSessionKey &&
+          !other.endedAt,
+      ),
+    inspect: async () => {
+      const { isEmbeddedPiRunActive, waitForEmbeddedPiRunEnd, costToolsAreSettled } =
+        await import("./cost-task.runtime.js");
+      const child = unchangedCostSession(cfg, entry);
+      if (!child?.sessionId || countPendingDescendantRuns(entry.childSessionKey) > 0) {
+        return false;
+      }
+      if (isEmbeddedPiRunActive(child.sessionId)) {
+        await waitForEmbeddedPiRunEnd(child.sessionId, 1_000);
+        if (isEmbeddedPiRunActive(child.sessionId)) {
+          return false;
+        }
+      }
+      try {
+        if (
+          !(await costToolsAreSettled({
+            sessionId: child.sessionId,
+            sessionFile: child.sessionFile,
+            storePath: resolveStorePath(cfg.session?.store, {
+              agentId: resolveAgentIdFromSessionKey(entry.childSessionKey),
+            }),
+          }))
+        ) {
+          return false;
+        }
+      } catch {
+        return false;
+      }
+      return !!unchangedCostSession(loadConfig(), entry);
+    },
+    reserve: (runId, remainingSeconds) =>
+      replaceSubagentRunAfterSteer({
+        previousRunId: entry.runId,
+        nextRunId: runId,
+        runTimeoutSeconds: remainingSeconds,
+        preserveFrozenResultFallback: true,
+        requirePersistence: true,
+        costTask: { ...entry.costTask!, continuations: 1, dispatchUnconfirmed: true },
+      }),
+    dispatch: async (runId, remainingSeconds, message) =>
+      callGateway<{ runId?: string }>({
+        method: "agent",
+        timeoutMs: 10_000,
+        params: {
+          sessionKey: entry.childSessionKey,
+          message,
+          deliver: false,
+          timeout: remainingSeconds,
+          extraSystemPrompt: entry.costTask?.systemPrompt,
+          thinking: entry.costTask?.thinking,
+          lane: AGENT_LANE_SUBAGENT,
+          idempotencyKey: runId,
+          inputProvenance: {
+            kind: "inter_session",
+            sourceSessionKey: entry.requesterSessionKey,
+            sourceChannel: INTERNAL_MESSAGE_CHANNEL,
+            sourceTool: COST_CONTINUATION_SOURCE,
+          },
+        },
+      }),
+    isAllowed: (runId) => {
+      const next = subagentRuns.get(runId);
+      return (
+        !!next?.costTask &&
+        !next.costTask.cancelled &&
+        costPolicyEnabled(loadConfig(), next.requesterSessionKey) &&
+        !!unchangedCostSession(loadConfig(), next)
+      );
+    },
+    confirmed: (runId) => {
+      const next = subagentRuns.get(runId);
+      if (next?.costTask && !next.costTask.cancelled) {
+        next.costTask.dispatchUnconfirmed = false;
+        persistSubagentRuns();
+      }
+    },
+    cancelled: cancelCostContinuation,
+    failed: async (runId) => {
+      const next = subagentRuns.get(runId);
+      if (!next?.costTask || next.suppressAnnounceReason === "killed") {
+        return;
+      }
+      next.costTask.dispatchUnconfirmed = true;
+      next.frozenResultText = dispatchUnconfirmedReply(runId);
+      await cancelCostContinuation(runId, false);
+      await completeSubagentRun({
+        runId,
+        outcome: { status: "error", error: "cost_continuation_dispatch_unconfirmed" },
+        reason: SUBAGENT_ENDED_REASON_ERROR,
+        triggerCleanup: true,
+      });
+    },
+  });
+}
+
+function cancelReassignedCostTask(entry: SubagentRunRecord): boolean {
+  if (!entry.costTask?.sessionId || !entry.costTask.requesterSessionId) {
+    return false;
+  }
+  const cfg = loadConfig();
+  const owner = costSessionEntry(cfg, entry.requesterSessionKey);
+  const child = costSessionEntry(cfg, entry.childSessionKey);
+  if (
+    owner?.sessionId === entry.costTask.requesterSessionId &&
+    child?.sessionId === entry.costTask.sessionId &&
+    (!child.spawnedBy || child.spawnedBy === entry.requesterSessionKey)
+  ) {
+    return false;
+  }
+  entry.costTask.cancelled = true;
+  entry.endedAt = Date.now();
+  entry.cleanupHandled = true;
+  entry.cleanupCompletedAt = entry.endedAt;
+  entry.suppressAnnounceReason = "killed";
+  persistSubagentRuns();
+  return true;
+}
+
 async function completeSubagentRun(params: {
   runId: string;
   endedAt?: number;
@@ -460,6 +723,16 @@ async function completeSubagentRun(params: {
   clearPendingLifecycleError(params.runId);
   const entry = subagentRuns.get(params.runId);
   if (!entry) {
+    return;
+  }
+  if (
+    entry.costTask?.cancelled &&
+    (entry.suppressAnnounceReason === "killed" || params.reason === SUBAGENT_ENDED_REASON_COMPLETE)
+  ) {
+    return;
+  }
+
+  if (cancelReassignedCostTask(entry)) {
     return;
   }
 
@@ -491,14 +764,32 @@ async function completeSubagentRun(params: {
     mutated = true;
   }
 
-  if (await freezeRunResultAtCompletion(entry)) {
+  if (!entry.costTask?.dispatchUnconfirmed && (await freezeRunResultAtCompletion(entry))) {
     mutated = true;
+  }
+  if (subagentRuns.get(params.runId) !== entry) {
+    return;
   }
 
   if (mutated) {
     persistSubagentRuns();
   }
+  if (params.triggerCleanup && entry.costTask) {
+    try {
+      if (await maybeContinueCostTask(entry)) {
+        return;
+      }
+    } catch {
+      log.warn("Cost continuation skipped because control state was unavailable");
+    }
+  }
+  if (subagentRuns.get(params.runId) !== entry) {
+    return;
+  }
 
+  if (cancelReassignedCostTask(entry)) {
+    return;
+  }
   const suppressedForSteerRestart = suppressAnnounceForSteerRestart(entry);
   const shouldEmitEndedHook =
     !suppressedForSteerRestart &&
@@ -565,6 +856,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
     wakeOnDescendantSettle: entry.wakeOnDescendantSettle === true,
+    costTask: entry.costTask,
   })
     .then((didAnnounce) => {
       finalizeAnnounceCleanup(didAnnounce);
@@ -669,6 +961,22 @@ function restoreSubagentRunsOnce() {
     });
     if (restoredCount === 0) {
       return;
+    }
+    let reconciledCostDispatch = false;
+    for (const entry of subagentRuns.values()) {
+      if (entry.costTask?.dispatchUnconfirmed) {
+        entry.costTask.cancelled = true;
+        entry.endedAt = Date.now();
+        entry.endedReason = SUBAGENT_ENDED_REASON_ERROR;
+        entry.outcome = { status: "error", error: "cost_continuation_dispatch_unconfirmed" };
+        entry.frozenResultText = dispatchUnconfirmedReply(entry.runId);
+        entry.cleanupHandled = false;
+        entry.cleanupCompletedAt = undefined;
+        reconciledCostDispatch = true;
+      }
+    }
+    if (reconciledCostDispatch) {
+      persistSubagentRuns();
     }
     if (reconcileOrphanedRestoredRuns()) {
       persistSubagentRuns();
@@ -1092,6 +1400,8 @@ export function replaceSubagentRunAfterSteer(params: {
   fallback?: SubagentRunRecord;
   runTimeoutSeconds?: number;
   preserveFrozenResultFallback?: boolean;
+  costTask?: CostTaskState;
+  requirePersistence?: boolean;
 }) {
   const previousRunId = params.previousRunId.trim();
   const nextRunId = params.nextRunId.trim();
@@ -1144,11 +1454,24 @@ export function replaceSubagentRunAfterSteer(params: {
     spawnMode,
     archiveAtMs,
     runTimeoutSeconds,
+    costTask: params.costTask ?? source.costTask,
   };
 
   subagentRuns.set(nextRunId, next);
+  if (params.requirePersistence) {
+    try {
+      saveSubagentRegistryToDisk(subagentRuns, { atomic: true });
+    } catch {
+      subagentRuns.delete(nextRunId);
+      if (previous) {
+        subagentRuns.set(previousRunId, previous);
+      }
+      return false;
+    }
+  } else {
+    persistSubagentRuns();
+  }
   ensureListener();
-  persistSubagentRuns();
   if (archiveAtMs) {
     startSweeper();
   }
@@ -1167,6 +1490,8 @@ export function registerSubagentRun(params: {
   cleanup: "delete" | "keep";
   label?: string;
   model?: string;
+  costSystemPrompt?: string;
+  costThinking?: string;
   workspaceDir?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
@@ -1184,8 +1509,26 @@ export function registerSubagentRun(params: {
   const runTimeoutSeconds = params.runTimeoutSeconds ?? 0;
   const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
+  const costContext = getCostTaskSpawnContext();
+  const costTask =
+    costContext &&
+    params.costSystemPrompt?.trim() &&
+    costContext.requesterSessionKey === params.requesterSessionKey &&
+    costContext.agentId === resolveAgentIdFromSessionKey(params.childSessionKey) &&
+    (resolveAgentConfig(cfg, costContext.agentId)?.modelRouting ??
+      cfg.agents?.defaults?.modelRouting) === "cost"
+      ? {
+          deadlineAt: now + waitTimeoutMs,
+          continuations: 0,
+          systemPrompt: params.costSystemPrompt,
+          thinking: params.costThinking,
+          sessionId: costSessionEntry(cfg, params.childSessionKey)?.sessionId,
+          requesterSessionId: costSessionEntry(cfg, params.requesterSessionKey)?.sessionId,
+        }
+      : undefined;
   subagentRuns.set(params.runId, {
     runId: params.runId,
+    ...(costTask ? { costTask } : {}),
     childSessionKey: params.childSessionKey,
     controllerSessionKey: params.controllerSessionKey ?? params.requesterSessionKey,
     requesterSessionKey: params.requesterSessionKey,
@@ -1395,7 +1738,17 @@ export function markSubagentRunTerminated(params: {
       continue;
     }
     if (typeof entry.endedAt === "number") {
+      if (entry.costTask && !entry.cleanupCompletedAt) {
+        entry.costTask.cancelled = true;
+        entry.suppressAnnounceReason = "killed";
+        entry.cleanupHandled = true;
+        entry.cleanupCompletedAt = now;
+        updated += 1;
+      }
       continue;
+    }
+    if (entry.costTask) {
+      entry.costTask.cancelled = true;
     }
     entry.endedAt = now;
     entry.outcome = { status: "error", error: reason };

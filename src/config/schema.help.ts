@@ -998,8 +998,10 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.list.*.identity.avatar":
     "Agent avatar (workspace-relative path, http(s) URL, or data URI).",
   "agents.defaults.modelRouting":
-    'Opt-in model routing: "off" preserves the existing flow; "cost" sends self-contained text tasks to subagents.model and uses the primary model for orchestration and review. Identical resolved models bypass routing. Execution requires embedded subagents; configure a cheaper worker model explicitly.',
+    'Opt-in model routing: "off" preserves the existing flow; "cost" sends self-contained text tasks directly to subagents.model. The optional classifier selects primary execution in the current session for advanced tasks, while ordinary tasks use secondary subagents. Without a classifier, non-text tasks retain secondary delegation. Identical resolved models bypass routing. Configure a cheaper worker model explicitly; existing tool permissions remain authoritative.',
   "agents.list[].modelRouting": "Per-agent override of agents.defaults.modelRouting.",
+  "agents.defaults.modelRoutingClassifier":
+    'Optional task-classification model (provider/model or alias), used only with modelRouting="cost". Classifies the complete scrubbed current delegated task without a character cutoff or full conversation history. A dedicated models.providers entry can specify its baseUrl and apiKey/SecretRef. An unconfigured classifier apiKey may reuse the current agent primary provider key only when both normalized base URLs match; configured but unresolved or rejected keys never trigger credential fallback. Requires OpenAI-compatible chat completions with reasoning_effort="none". Classification errors, including provider context-limit rejections, or ambiguity retain worker execution, with no retries.',
   "agents.defaults.model.primary": "Primary model (provider/model).",
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",

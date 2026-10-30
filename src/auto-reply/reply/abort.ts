@@ -238,6 +238,10 @@ export function stopSubagentsForRequester(params: {
     }
     seenChildKeys.add(childKey);
 
+    if (run.endedAt && run.costTask && !run.cleanupCompletedAt) {
+      stopped += markSubagentRunTerminated({ runId: run.runId, reason: "killed" }) > 0 ? 1 : 0;
+    }
+
     if (!run.endedAt) {
       const cleared = clearSessionQueues([childKey]);
       const parsed = parseAgentSessionKey(childKey);

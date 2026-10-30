@@ -446,6 +446,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "auth.cooldowns.failureWindowHours": "Failover Window (hours)",
   "agents.defaults.models": "Models",
   "agents.defaults.modelRouting": "Model Routing",
+  "agents.defaults.modelRoutingClassifier": "Cost Task Classifier Model",
   "agents.list[].modelRouting": "Model Routing",
   "agents.defaults.model.primary": "Primary Model",
   "agents.defaults.model.fallbacks": "Model Fallbacks",

@@ -13,6 +13,7 @@ import {
   resolveAbortCutoffFromContext,
   resolveSessionEntryForKey,
   setAbortMemory,
+  stopSubagentsForRequester,
   shouldSkipMessageByAbortCutoff,
   tryFastAbortFromMessage,
 } from "./abort.js";
@@ -40,6 +41,7 @@ const subagentRegistryMocks = vi.hoisted(() => ({
 
 vi.mock("../../agents/subagent-registry.js", () => ({
   listSubagentRunsForRequester: subagentRegistryMocks.listSubagentRunsForRequester,
+  listSubagentRunsForController: subagentRegistryMocks.listSubagentRunsForRequester,
   markSubagentRunTerminated: subagentRegistryMocks.markSubagentRunTerminated,
 }));
 
@@ -64,6 +66,31 @@ vi.mock("../../acp/control-plane/manager.js", () => ({
 }));
 
 describe("abort detection", () => {
+  it("cancels a cost continuation pending after the worker has ended", () => {
+    subagentRegistryMocks.listSubagentRunsForRequester
+      .mockReset()
+      .mockReturnValueOnce([
+        {
+          runId: "pending-cost",
+          childSessionKey: "agent:main:subagent:cost",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "synthetic",
+          cleanup: "keep",
+          createdAt: 1,
+          endedAt: 2,
+          costTask: { deadlineAt: Date.now() + 60000, continuations: 0 },
+        },
+      ])
+      .mockReturnValue([]);
+    subagentRegistryMocks.markSubagentRunTerminated.mockClear();
+    const result = stopSubagentsForRequester({ cfg: {}, requesterSessionKey: "agent:main:main" });
+    expect(result.stopped).toBe(1);
+    expect(subagentRegistryMocks.markSubagentRunTerminated).toHaveBeenCalledWith({
+      runId: "pending-cost",
+      reason: "killed",
+    });
+  });
   async function writeSessionStore(
     storePath: string,
     sessionIdsByKey: Record<string, string>,

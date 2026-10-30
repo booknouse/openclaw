@@ -32,6 +32,11 @@ import {
   buildAnnounceIdempotencyKey,
   resolveQueueAnnounceId,
 } from "./announce-idempotency.js";
+import {
+  costTaskStatusLabel,
+  parseCostTaskResult,
+  type CostTaskState,
+} from "./cost-task-protocol.js";
 import { formatAgentInternalEventsForPrompt, type AgentInternalEvent } from "./internal-events.js";
 import {
   isEmbeddedPiRunActive,
@@ -1025,7 +1030,11 @@ function buildAnnounceReplyInstruction(params: {
   requesterIsSubagent: boolean;
   announceType: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  costTask?: CostTaskState;
 }): string {
+  if (params.costTask) {
+    return "This cost worker run has ended, which is not itself proof the user's goal is complete. Review its business status and evidence against the original goal. The controller already handled the single permitted automatic continuation. Do not spawn a replacement or replay completed/remote operations without a new user instruction. Give a concise report of actual changes, checks and concrete remaining work or blockers; do not repeat apologies, plans or receipt tags.";
+  }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
@@ -1168,10 +1177,14 @@ export async function runSubagentAnnounceFlow(params: {
   expectsCompletionMessage?: boolean;
   spawnMode?: SpawnSubagentMode;
   wakeOnDescendantSettle?: boolean;
+  costTask?: CostTaskState;
   signal?: AbortSignal;
   bestEffortDeliver?: boolean;
 }): Promise<boolean> {
   let didAnnounce = false;
+  const taskLabel = params.costTask
+    ? params.label?.trim().slice(0, 120) || "Cost task"
+    : params.label || params.task || "task";
   const expectsCompletionMessage = params.expectsCompletionMessage === true;
   const announceType = params.announceType ?? "subagent task";
   let shouldDeleteChildSession = params.cleanup === "delete";
@@ -1291,7 +1304,7 @@ export async function runSubagentAnnounceFlow(params: {
       const woke = await wakeSubagentRunAfterDescendants({
         runId: params.childRunId,
         childSessionKey: params.childSessionKey,
-        taskLabel: params.label || params.task || "task",
+        taskLabel,
         findings: childCompletionFindings,
         announceId: wakeAnnounceId,
         signal: params.signal,
@@ -1342,19 +1355,25 @@ export async function runSubagentAnnounceFlow(params: {
       }
     }
 
-    // Build status label
+    const rawFindings = childCompletionFindings || reply || "(no output)";
+    const costResult = params.costTask ? parseCostTaskResult(rawFindings) : undefined;
+    // Business status is separate from a successful run termination.
     const statusLabel =
       outcome.status === "ok"
-        ? "completed successfully"
+        ? params.costTask
+          ? costTaskStatusLabel(costResult?.receipt)
+          : "completed successfully"
         : outcome.status === "timeout"
           ? "timed out"
           : outcome.status === "error"
             ? `failed: ${outcome.error || "unknown error"}`
             : "finished with unknown status";
 
-    const taskLabel = params.label || params.task || "task";
     const announceSessionId = childSessionId || "unknown";
-    const findings = childCompletionFindings || reply || "(no output)";
+    const findings = costResult?.receipt
+      ? costResult.text ||
+        `Task status: ${costResult.receipt.status}. Remaining: ${costResult.receipt.remaining.join("; ")}. Blocker: ${costResult.receipt.blocker ?? "none"}.`
+      : rawFindings;
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
@@ -1389,6 +1408,7 @@ export async function runSubagentAnnounceFlow(params: {
       requesterIsSubagent,
       announceType,
       expectsCompletionMessage,
+      costTask: params.costTask,
     });
     const statsLine = await buildCompactAnnounceStatsLine({
       sessionKey: params.childSessionKey,

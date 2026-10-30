@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import "./test-helpers/fast-core-tools.js";
+import { withCostTaskSpawnContext } from "./cost-task-protocol.js";
 import {
   getCallGatewayMock,
   getSessionsSpawnTool,
@@ -126,6 +127,28 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
       return;
     }
     process.env.OPENCLAW_TEST_FAST = fastModeEnv.previous;
+  });
+
+  it.each([false, true])("adds the completion receipt only to cost workers: %s", async (cost) => {
+    const ctx = setupSessionsSpawnGatewayMock({
+      includeSessionsList: true,
+      includeChatHistory: true,
+    });
+    const tool = await getSessionsSpawnTool({ agentSessionKey: "main", agentChannel: "whatsapp" });
+    const execute = () => executeSpawnAndExpectAccepted({ tool, callId: "receipt-scope" });
+    if (cost) {
+      await withCostTaskSpawnContext({ requesterSessionKey: "main", agentId: "main" }, execute);
+    } else {
+      await execute();
+    }
+    const request = ctx.calls.find((call) => call.method === "agent");
+    const prompt = (request?.params as { extraSystemPrompt?: string })?.extraSystemPrompt ?? "";
+    const message = (request?.params as { message?: string })?.message ?? "";
+    expect(prompt.split("<cost_task_result>").length - 1).toBe(cost ? 1 : 0);
+    expect(prompt.includes("do thing")).toBe(!cost);
+    expect(message).toContain("do thing");
+    // Drain completion delivery before the next fixture reuses its mock run ID.
+    await waitFor(() => ctx.calls.filter((call) => call.method === "agent").length === 2);
   });
 
   it("sessions_spawn runs cleanup flow after subagent completion", async () => {

@@ -3,6 +3,7 @@ export {
   countPendingDescendantRuns,
   countPendingDescendantRunsExcludingRun,
   isSubagentSessionRunActive,
+  isCostTaskContinuationAllowed,
   listSubagentRunsForRequester,
   replaceSubagentRunAfterSteer,
   resolveRequesterForChildSession,

@@ -2,6 +2,15 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.12
+
+### Changes
+
+- Agents/model routing: in cost mode only, use an optional modelRoutingClassifier without reasoning to select current-session primary execution for advanced tasks or secondary delegation for routine tasks; ambiguity, classifier failures and timeouts retain the worker default without changing permissions or other routing modes.
+- Agents/model routing: prefer a dedicated classifier API key; when unconfigured, reuse the current agent primary provider key only on the same normalized API endpoint, without retrying invalid dedicated credentials or sending keys across endpoints.
+- Agents/cost routing: classify the complete scrubbed current task, preserving middle requirements and task code without a fixed character cutoff or extra summary call; separate worker run termination from business completion and allow one same-session continuation only for an explicit safe partial result, inside the original deadline, with settled tools, durable reservation and cancellation guards. Other routing modes are unchanged.
+- Agents/cost routing: classify before primary execution, keep advanced tasks and authorized tools in the current primary session, and delegate routine tasks only to the secondary model without a second classifier call. Reuse identical dispatch results within a user turn across retries and completion delivery, bound distinct submissions, and avoid copying full task text into both worker system prompts and completion labels.
+
 ## 2026.3.13-cortex.11
 
 ### Changes

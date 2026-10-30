@@ -334,7 +334,11 @@ async function killSubagentRun(params: {
   cache: Map<string, Record<string, SessionEntry>>;
 }): Promise<{ killed: boolean; sessionId?: string }> {
   if (params.entry.endedAt) {
-    return { killed: false };
+    return {
+      killed:
+        !!params.entry.costTask &&
+        markSubagentRunTerminated({ runId: params.entry.runId, reason: "killed" }) > 0,
+    };
   }
   const childSessionKey = params.entry.childSessionKey;
   const resolved = resolveSessionEntryForKey({

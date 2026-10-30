@@ -18,6 +18,7 @@ export const AgentDefaultsSchema = z
   .object({
     model: AgentModelSchema.optional(),
     modelRouting: z.enum(["off", "cost"]).optional(),
+    modelRoutingClassifier: z.string().trim().min(1).optional(),
     imageModel: AgentModelSchema.optional(),
     pdfModel: AgentModelSchema.optional(),
     pdfMaxBytesMb: z.number().positive().optional(),
