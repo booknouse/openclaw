@@ -2,6 +2,13 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.13
+
+### Fixes
+
+- Agents/cost routing: guide planners to skip routine agent discovery for known same-agent workers while preserving discovery for unresolved or cross-agent targets and existing model and permission policies.
+- Agents/cost routing: prefer same-turn independent read-only evidence checks when supported, keeping dependent checks and writes sequential without skipping verification, enlarging reads or changing continuation safeguards.
+
 ## 2026.3.13-cortex.12
 
 ### Changes

@@ -347,6 +347,57 @@ describe("cost routing tool policy", () => {
     expect(result.systemPrompt).toContain("final reviewer");
     expect(result.systemPrompt).toContain("user constraints and authorizations");
   });
+  it("avoids routine discovery and serial independent reads without reducing verification or tools", async () => {
+    const discovery = makeTool("agents_list");
+    const read = makeTool("read");
+    const result = applyCostRoutingToolPolicy(
+      [discovery, read, makeTool("sessions_spawn")],
+      "orchestrator",
+      routingContext,
+    );
+    expect(result.tools[0]).toBe(discovery);
+    expect(result.tools[1]).toBe(read);
+    expect(discovery.execute).not.toHaveBeenCalled();
+    expect(read.execute).not.toHaveBeenCalled();
+    const prompt = result.systemPrompt ?? "";
+    expect(prompt).toContain("known same-agent delegation");
+    expect(prompt).toContain("omit agentId/model; skip agents_list preflight");
+    expect(prompt).toContain("cross-agent or unresolved targets");
+    expect(prompt).toContain("discover and verify allowed agents");
+    expect(prompt).toContain("independent read-only evidence checks in one turn");
+    expect(prompt).toContain("dependent checks and writes stay sequential");
+    expect(prompt).toContain("Do not skip checks or enlarge reads just to batch");
+    expect(prompt).toContain("user constraints and authorizations");
+    expect(prompt).toContain("deterministic checks");
+    expect(prompt).toContain("unresolved risks");
+    expect(prompt).toContain("no unsupported success claims");
+    expect(prompt).toContain("tool, sandbox and data-access boundaries");
+    expect(prompt).not.toMatch(/chipx|report\.jsonl|--save-evidence/i);
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(1652);
+    await result.tools[0].execute("discover-needed-target", {});
+    expect(discovery.execute).toHaveBeenCalledWith("discover-needed-target", {});
+    const readArgs = { path: "/tmp/test-evidence.json" };
+    await result.tools[1].execute("verify-evidence", readArgs);
+    expect(read.execute).toHaveBeenCalledWith("verify-evidence", readArgs);
+  });
+  it("does not inject planner efficiency guidance outside an enabled cost planner", () => {
+    const tools = ["agents_list", "read", "exec", "sessions_spawn"].map(makeTool);
+    for (const policy of [undefined, "off"] as const) {
+      const cfg = structuredClone(config);
+      cfg.agents!.defaults!.modelRouting = policy;
+      const result = applyCostRoutingToolPolicy(tools, "orchestrator", {
+        ...routingContext,
+        config: cfg,
+      });
+      expect(result.tools).toBe(tools);
+      expect(result.systemPrompt).toBeUndefined();
+    }
+    const primary = applyCostRoutingToolPolicy(tools, "primary", routingContext);
+    expect(primary.systemPrompt).toContain("directly in this session");
+    expect(primary.systemPrompt).not.toContain("agents_list preflight");
+    expect(primary.systemPrompt).not.toContain("independent read-only evidence checks");
+    expect(classifyCostTask).not.toHaveBeenCalled();
+  });
   it("retains only authorized read-only remote results for planners", () => {
     const resultTool = makeTool("remote_task_result");
     const tools = [

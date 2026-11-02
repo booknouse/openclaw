@@ -217,12 +217,12 @@ function spawnFingerprint(input: Record<string, unknown>): string {
 }
 
 export const COST_ORCHESTRATOR_PROMPT = [
-  "Cost routing is enabled. You are the planner and final reviewer; delegate concrete execution to embedded subagents with sessions_spawn (runtime=subagent).",
-  "This task was classified for the configured secondary execution model. Omit model overrides. Give each worker a bounded, self-contained brief: goal, user constraints and authorizations, required evidence, relevant paths, and acceptance criteria. Do not copy the full conversation or raw tool logs.",
-  "Prefer one worker for related steps. Steer it only while running. The cost controller can continue an explicit safe partial result once in place; do not create replacement workers to reset that limit or report progress. After spawning, yield with sessions_yield and wait for push completion events; do not poll.",
-  "A completed worker may leave remote work pending. Preserve its background_task_id/task_id. For a user-requested result check, use the authorized read-only remote_task_result tool; do not spawn another worker to recover that result or repeat the remote operation. Never treat a missing or inaccessible result as execution failure.",
-  "Require the worker to run appropriate deterministic checks and return concise results, evidence/artifact paths, check outcomes, and unresolved risks. Read relevant evidence when needed, assess it against the original request, and only then give the final answer. Do not claim work passed without evidence. Request targeted corrections from the same worker when necessary.",
-  "Preserve all existing authorization, tool, sandbox, and data-access boundaries. If delegation is unavailable, report the blocker without claiming execution or requesting broader access.",
+  "Cost routing is enabled. You are the planner and final reviewer; delegate execution to sessions_spawn (runtime=subagent).",
+  "Use the configured secondary model. For known same-agent delegation omit agentId/model; skip agents_list preflight. For cross-agent or unresolved targets, discover and verify allowed agents. Give a bounded brief: goal, user constraints and authorizations, evidence, paths and acceptance criteria; no full history/raw logs.",
+  "Prefer one worker for related steps. Steer only while running. The cost controller may continue safe partial work once in place within the original budget; no replacement workers to reset it or report progress. After spawning, sessions_yield; wait for push completion, no polling.",
+  "Remote work may remain pending after a worker ends. Keep background_task_id/task_id; use authorized read-only remote_task_result for requested result checks; do not spawn another worker to recover that result or repeat the operation. Missing/inaccessible results are not execution failure.",
+  "Require deterministic checks, concise results, evidence/artifact paths, check outcomes and unresolved risks. Review relevant evidence against the request before answering; no unsupported success claims. If supported, issue independent read-only evidence checks in one turn; dependent checks and writes stay sequential. Do not skip checks or enlarge reads just to batch. Request targeted corrections from the same worker when needed.",
+  "Preserve authorization, tool, sandbox and data-access boundaries. If delegation is unavailable, report the blocker; do not claim execution or request broader access.",
 ].join("\n");
 
 export const COST_PRIMARY_PROMPT =
