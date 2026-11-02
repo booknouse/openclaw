@@ -166,6 +166,82 @@ describe("cost-only task classifier", () => {
     expect(JSON.parse(body.messages[1].content)).toEqual({ task: params.task });
   });
 
+  it("correlates usage locally without sending IDs or adding requests/log writes", async () => {
+    const body = reply();
+    Object.assign(body.usage, { total_tokens: 132, prompt_tokens_details: { cached_tokens: 50 } });
+    respond(body);
+    expect(
+      await classifyCostTask({ ...params, sessionId: "session-opaque", runId: "run-opaque" }),
+    ).toBe("primary");
+    expect(fetchWithSsrFGuard).toHaveBeenCalledTimes(1);
+    expect(logInfo).toHaveBeenCalledTimes(1);
+    const event = logInfo.mock.calls[0][1].usageEvent;
+    expect(event).toMatchObject({
+      schemaVersion: 1,
+      source: "classifier_usage",
+      agent_id: "main",
+      session_id: "session-opaque",
+      run_id: "run-opaque",
+      provider: "ddww",
+      model: "gpt-6-luna",
+      request_attempted: true,
+      usage_status: "reported",
+      input: 70,
+      output: 12,
+      cacheRead: 50,
+      cacheWrite: 0,
+      totalTokens: 132,
+      cache_detail_reported: true,
+    });
+    expect(event.call_key).toMatch(/^[a-f0-9]{64}$/);
+    expect(event.timestamp).toBeTypeOf("number");
+    expect(JSON.stringify(requestBody())).not.toMatch(
+      /session-opaque|run-opaque|call_key|usageEvent/,
+    );
+    expect(JSON.stringify(logInfo.mock.calls)).not.toContain(params.task);
+  });
+
+  it.each(["not json", '{"route":"uncertain"}'])(
+    "retains consumed tokens for invalid answer %s",
+    async (content) => {
+      respond(reply(content));
+      expect(await classifyCostTask(params)).toBe("secondary");
+      expect(logInfo.mock.calls[0][1].usageEvent).toMatchObject({
+        usage_status: "reported",
+        totalTokens: 132,
+      });
+    },
+  );
+
+  it.each([
+    {},
+    { prompt_tokens: -1, completion_tokens: 12 },
+    { prompt_tokens: 120, completion_tokens: 12, total_tokens: 999 },
+    { prompt_tokens: 120, completion_tokens: 12, prompt_tokens_details: { cached_tokens: 121 } },
+  ])("does not guess missing/inconsistent usage or change the route: %j", async (usage) => {
+    respond({ ...reply(), usage });
+    expect(await classifyCostTask(params)).toBe("primary");
+    const event = logInfo.mock.calls[0][1].usageEvent;
+    expect(event.usage_status).toBe("unknown");
+    expect(event).not.toHaveProperty("totalTokens");
+  });
+
+  it("does not turn a log failure into a routing failure", async () => {
+    logInfo.mockImplementationOnce(() => {
+      throw new Error("logger unavailable");
+    });
+    expect(await classifyCostTask(params)).toBe("primary");
+    expect(fetchWithSsrFGuard).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives repeated calls in one run distinct accounting IDs", async () => {
+    await classifyCostTask(params);
+    await classifyCostTask(params);
+    expect(logInfo.mock.calls[0][1].usageEvent.call_key).not.toBe(
+      logInfo.mock.calls[1][1].usageEvent.call_key,
+    );
+  });
+
   it("uses a dedicated classifier provider key without changing execution credentials", async () => {
     const config = structuredClone(cfg);
     config.agents!.defaults!.model = "ddww/sol";
@@ -472,6 +548,12 @@ describe("cost-only task classifier", () => {
     const pending = classifyCostTask(params);
     await vi.advanceTimersByTimeAsync(COST_CLASSIFIER_TIMEOUT_MS);
     expect(await pending).toBe("secondary");
+    expect(logInfo).toHaveBeenCalledTimes(1);
+    expect(logInfo.mock.calls[0][1].usageEvent).toMatchObject({
+      request_attempted: true,
+      usage_status: "unknown",
+    });
+    expect(logInfo.mock.calls[0][1].usageEvent).not.toHaveProperty("totalTokens");
     expect(fetchWithSsrFGuard).toHaveBeenCalledTimes(1);
     expect(vi.mocked(fetchWithSsrFGuard).mock.calls[0][0].signal?.aborted).toBe(true);
     finishRequest({
@@ -481,6 +563,8 @@ describe("cost-only task classifier", () => {
     });
     vi.useRealTimers();
     await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    expect(logInfo).toHaveBeenCalledTimes(1);
+    expect(logInfo.mock.calls[0][1].usageEvent).not.toHaveProperty("totalTokens");
   });
 
   it("propagates cancellation to an in-flight classifier request", async () => {

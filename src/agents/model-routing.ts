@@ -191,6 +191,8 @@ export async function resolveCostRoutingExecutionPlan(
     }).sessionAgentId,
     agentDir: params.agentDir,
     task: params.modelRoutingPrompt ?? params.prompt,
+    sessionId: params.sessionId,
+    runId: params.runId,
     signal,
   }).catch(() => "secondary" as const);
   signal.throwIfAborted();

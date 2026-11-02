@@ -188,6 +188,12 @@ describe("classification before primary execution", () => {
     vi.mocked(classifyCostTask).mockResolvedValue("primary");
     expect((await resolveCostRoutingExecutionPlan(base))?.role).toBe("primary");
     expect(classifyCostTask).toHaveBeenCalledTimes(1);
+    expect(classifyCostTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: base.sessionId,
+        runId: base.runId,
+      }),
+    );
     const tools = [makeTool("remote_run"), makeTool("write"), makeTool("sessions_spawn")];
     const result = applyCostRoutingToolPolicy(tools, "primary", {
       config,

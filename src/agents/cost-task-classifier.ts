@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { OpenClawConfig } from "../config/config.js";
 import { hasConfiguredSecretInput } from "../config/types.secrets.js";
 import {
@@ -22,6 +23,46 @@ type Decision = {
   inputTokens?: number;
   outputTokens?: number;
 };
+
+type UsageObservation = {
+  request_attempted: boolean;
+  provider?: string;
+  model?: string;
+  usage_status: "not_requested" | "unknown" | "reported";
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  totalTokens?: number;
+  cache_detail_reported?: boolean;
+};
+
+function observeUsage(body: unknown, observation: UsageObservation): void {
+  const usage = isRecord(body) && isRecord(body.usage) ? body.usage : {};
+  const prompt = tokenCount(usage.prompt_tokens);
+  const output = tokenCount(usage.completion_tokens);
+  const total = tokenCount(usage.total_tokens);
+  const details = isRecord(usage.prompt_tokens_details) ? usage.prompt_tokens_details : {};
+  const cached = tokenCount(details.cached_tokens);
+  if (
+    prompt === undefined ||
+    output === undefined ||
+    (usage.total_tokens !== undefined && total !== prompt + output) ||
+    (details.cached_tokens !== undefined && (cached === undefined || cached > prompt))
+  ) {
+    return;
+  }
+  // Chat-completions prompt_tokens includes cached input. Never count it twice.
+  Object.assign(observation, {
+    usage_status: "reported",
+    input: prompt - (cached ?? 0),
+    output,
+    cacheRead: cached ?? 0,
+    cacheWrite: 0,
+    totalTokens: prompt + output,
+    cache_detail_reported: cached !== undefined,
+  });
+}
 
 export const COST_CLASSIFIER_TIMEOUT_MS = 5_000;
 const log = createSubsystemLogger("agents/cost-routing");
@@ -65,9 +106,7 @@ function fallback(source: Decision["source"]): Decision {
 }
 
 function tokenCount(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.floor(value)
-    : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 /** A primary credential must never be sent to a different service or API namespace. */
@@ -97,6 +136,7 @@ async function requestClassification(params: {
   agentDir?: string;
   task: string;
   signal: AbortSignal;
+  observation: UsageObservation;
 }): Promise<Decision> {
   // Only use an operator-configured endpoint; never derive a URL from task text.
   const raw = params.config.agents?.defaults?.modelRoutingClassifier?.trim();
@@ -117,6 +157,8 @@ async function requestClassification(params: {
   if (!provider || !ref) {
     return fallback("unavailable");
   }
+  params.observation.provider = ref.provider;
+  params.observation.model = ref.model;
   const model = provider.models.find((entry) => entry.id === ref.model);
   if (!provider.baseUrl || (model?.api ?? provider.api) !== "openai-completions") {
     return fallback("unavailable");
@@ -152,6 +194,8 @@ async function requestClassification(params: {
   }
   headers.set("Authorization", `Bearer ${auth.apiKey}`);
   headers.set("Content-Type", "application/json");
+  params.observation.request_attempted = true;
+  params.observation.usage_status = "unknown";
   const { response, release } = await fetchWithSsrFGuard(
     withTrustedEnvProxyGuardedFetchMode({
       url: `${provider.baseUrl.replace(/\/+$/, "")}/chat/completions`,
@@ -183,6 +227,8 @@ async function requestClassification(params: {
     }
     const body: unknown = await response.json();
     params.signal.throwIfAborted();
+    // Even an invalid/truncated route can consume tokens; retain its actual usage.
+    observeUsage(body, params.observation);
     const choice = isRecord(body) && Array.isArray(body.choices) ? body.choices[0] : undefined;
     const message = isRecord(choice) && isRecord(choice.message) ? choice.message : undefined;
     if (
@@ -220,6 +266,8 @@ export async function classifyCostTask(params: {
   agentDir?: string;
   task: string;
   signal?: AbortSignal;
+  sessionId?: string;
+  runId?: string;
 }): Promise<CostTaskRoute> {
   const policy =
     resolveAgentConfig(params.config, params.agentId)?.modelRouting ??
@@ -235,6 +283,8 @@ export async function classifyCostTask(params: {
     return "secondary";
   }
   const start = Date.now();
+  const callKey = randomBytes(32).toString("hex");
+  const observation: UsageObservation = { request_attempted: false, usage_status: "not_requested" };
   const controller = new AbortController();
   const relayAbort = () => controller.abort();
   params.signal?.addEventListener("abort", relayAbort, { once: true });
@@ -248,12 +298,30 @@ export async function classifyCostTask(params: {
   try {
     const decision = await Promise.race([
       aborted,
-      requestClassification({ ...params, task, signal: controller.signal }).catch(() =>
+      requestClassification({ ...params, task, signal: controller.signal, observation }).catch(() =>
         fallback("unavailable"),
       ),
     ]);
-    // Deliberately omit task text, agent/session identifiers, credentials and provider errors.
-    log.info("cost task route", { ...decision, elapsedMs: Date.now() - start });
+    // Only local technical IDs: no session key, task text, credentials or provider error body.
+    // Widen the existing event, without another model request, log write or awaited flush.
+    try {
+      log.info("cost task route", {
+        ...decision,
+        elapsedMs: Date.now() - start,
+        usageEvent: {
+          schemaVersion: 1,
+          source: "classifier_usage",
+          call_key: callKey,
+          agent_id: params.agentId,
+          session_id: params.sessionId,
+          run_id: params.runId,
+          timestamp: start,
+          ...observation,
+        },
+      });
+    } catch {
+      // Observability failure must not change the selected execution model.
+    }
     return decision.route;
   } finally {
     clearTimeout(timer);

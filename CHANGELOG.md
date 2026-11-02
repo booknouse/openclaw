@@ -2,6 +2,13 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.14
+
+### Fixes
+
+- Agents/cost routing: attach local session, run and call identifiers to existing classifier usage logs for reliable task-level token comparisons, without additional model requests or changes to routing policy.
+- Agents/cost routing: retain reported token usage for invalid classifier answers, avoid double-counting cached input, and mark unavailable usage as unknown. Logging failures no longer affect the selected execution model.
+
 ## 2026.3.13-cortex.13
 
 ### Fixes
