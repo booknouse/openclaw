@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { costRemoteRuntime } from "../../agents/cost-remote-wait.js";
 import {
   getApiKeyForModel as getApiKeyForModelRaw,
   resolveApiKeyForProvider as resolveApiKeyForProviderRaw,
@@ -52,6 +53,7 @@ export type CreatePluginRuntimeOptions = {
 export function createPluginRuntime(_options: CreatePluginRuntimeOptions = {}): PluginRuntime {
   const runtime = {
     version: resolveVersion(),
+    costTasks: costRemoteRuntime,
     config: createRuntimeConfig(),
     subagent: _options.subagent ?? createUnavailableSubagentRuntime(),
     system: createRuntimeSystem(),

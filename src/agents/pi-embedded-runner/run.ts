@@ -263,6 +263,25 @@ export async function runEmbeddedPiAgent(
 ): Promise<EmbeddedPiRunResult> {
   const routingStartedAt = Date.now();
   const plan = await resolveCostRoutingExecutionPlan(params);
+  const { getCostRemoteOwner } = await import("../subagent-registry-runtime.js");
+  const { withCostRemoteRun, hasCostRemoteSpawn, COST_REMOTE_RESUME_SOURCE } =
+    await import("../cost-remote.runtime.js");
+  const enabled =
+    plan?.role === "primary" ||
+    plan?.role === "orchestrator" ||
+    !!getCostRemoteOwner(params.runId, params.sessionKey ?? "") ||
+    hasCostRemoteSpawn(params.runId, params.sessionKey ?? "") ||
+    params.inputProvenance?.sourceTool === COST_REMOTE_RESUME_SOURCE;
+  return withCostRemoteRun(params, enabled, () =>
+    runPlannedEmbeddedPiAgent(params, plan, routingStartedAt),
+  );
+}
+
+async function runPlannedEmbeddedPiAgent(
+  params: RunEmbeddedPiAgentParams,
+  plan: Awaited<ReturnType<typeof resolveCostRoutingExecutionPlan>>,
+  routingStartedAt: number,
+): Promise<EmbeddedPiRunResult> {
   if (!plan) {
     return runWithOverflowRecovery(params, runEmbeddedPiAgentInner);
   }
@@ -329,10 +348,15 @@ async function runEmbeddedPiAgentInner(
 ): Promise<EmbeddedPiRunResult> {
   const sessionLane = resolveSessionLane(params.sessionKey?.trim() || params.sessionId);
   const globalLane = resolveGlobalLane(params.lane);
-  const enqueueGlobal =
-    params.enqueue ?? ((task, opts) => enqueueCommandInLane(globalLane, task, opts));
-  const enqueueSession =
-    params.enqueue ?? ((task, opts) => enqueueCommandInLane(sessionLane, task, opts));
+  const { bindCostRemoteScope } = await import("../cost-remote.runtime.js");
+  const enqueueGlobal: NonNullable<RunEmbeddedPiAgentParams["enqueue"]> = (task, opts) =>
+    params.enqueue
+      ? params.enqueue(bindCostRemoteScope(task), opts)
+      : enqueueCommandInLane(globalLane, bindCostRemoteScope(task), opts);
+  const enqueueSession: NonNullable<RunEmbeddedPiAgentParams["enqueue"]> = (task, opts) =>
+    params.enqueue
+      ? params.enqueue(bindCostRemoteScope(task), opts)
+      : enqueueCommandInLane(sessionLane, bindCostRemoteScope(task), opts);
   const channelHint = params.messageChannel ?? params.messageProvider;
   const resolvedToolResultFormat =
     params.toolResultFormat ??

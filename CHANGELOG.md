@@ -2,6 +2,18 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.15
+
+### Fixes
+
+- Agents/cost routing: keep remote operations attached to the original task while waiting for results, including primary execution and delegated workers, without spending the partial-result continuation allowance or adding model polling turns. Other routing modes are unchanged.
+- Agents/cost routing: persist remote waits and resume the original execution after a gateway restart, with result acknowledgments, duplicate-event protection, original permissions and deadlines, and cancellation checks. Share wait ownership across agent and plugin SDK bundles and preserve it through queued execution.
+- Agents/cost routing: guard the child-start registration race, abort the execution runner on cancellation or deadline, and match executor IDs across background-result aliases.
+
+### Upgrade notes
+
+- Remote wait recovery requires the matching Server cost-wait endpoints and database migration together with remote-tool 0.8.45 or later. Update Server before enabling the matching gateway/plugin pair. Existing historical tasks are not automatically resumed.
+
 ## 2026.3.13-cortex.14
 
 ### Fixes

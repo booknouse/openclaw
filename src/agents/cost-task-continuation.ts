@@ -25,7 +25,7 @@ const TERMINAL = new Set([
 ]);
 
 function operationId(value: Record<string, unknown>): string | undefined {
-  for (const key of ["background_task_id", "task_id", "taskId", "sessionId"]) {
+  for (const key of ["task_id", "taskId", "background_task_id", "sessionId"]) {
     if (typeof value[key] === "string") {
       return value[key];
     }

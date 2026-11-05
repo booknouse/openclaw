@@ -607,6 +607,10 @@ export async function spawnSubagentDirect(
     childSystemPrompt = `${childSystemPrompt}\n${COST_TASK_RECEIPT_PROMPT}`;
   }
   const childIdem = crypto.randomUUID();
+  if (getCostTaskSpawnContext()) {
+    const { markCostRemoteSpawn } = await import("./cost-remote.runtime.js");
+    markCostRemoteSpawn(childIdem, childSessionKey);
+  }
   let childRunId: string = childIdem;
   try {
     const {

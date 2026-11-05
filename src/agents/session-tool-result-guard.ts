@@ -5,6 +5,7 @@ import type {
   PluginHookBeforeMessageWriteResult,
 } from "../plugins/types.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { costRemoteRuntime } from "./cost-remote-wait.js";
 import {
   HARD_MAX_TOOL_RESULT_CHARS,
   truncateToolResultMessage,
@@ -206,7 +207,9 @@ export function installSessionToolResultGuard(
       if (!persisted) {
         return undefined;
       }
-      return originalAppend(persisted as never);
+      const result = originalAppend(persisted as never);
+      costRemoteRuntime.observe([persisted]);
+      return result;
     }
 
     // Skip tool call extraction for aborted/errored assistant messages.

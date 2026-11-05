@@ -9,6 +9,7 @@ export type RuntimeLogger = {
 
 export type PluginRuntimeCore = {
   version: string;
+  costTasks?: typeof import("../../agents/cost-remote-wait.js").costRemoteRuntime;
   config: {
     loadConfig: typeof import("../../config/config.js").loadConfig;
     writeConfigFile: typeof import("../../config/config.js").writeConfigFile;

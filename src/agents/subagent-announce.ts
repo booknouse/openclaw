@@ -1033,7 +1033,7 @@ function buildAnnounceReplyInstruction(params: {
   costTask?: CostTaskState;
 }): string {
   if (params.costTask) {
-    return "This cost worker run has ended, which is not itself proof the user's goal is complete. Review its business status and evidence against the original goal. The controller already handled the single permitted automatic continuation. Do not spawn a replacement or replay completed/remote operations without a new user instruction. Give a concise report of actual changes, checks and concrete remaining work or blockers; do not repeat apologies, plans or receipt tags.";
+    return "This cost worker run has ended, which is not itself proof the user's goal is complete. Review its business status and evidence against the original goal. The controller evaluated eligibility for the bounded automatic continuation. Do not spawn a replacement or replay completed/remote operations without a new user instruction. Give a concise report of actual changes, checks and concrete remaining work or blockers; do not repeat apologies, plans or receipt tags.";
   }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;

@@ -164,6 +164,44 @@ describe("one bounded cost continuation", () => {
 });
 
 describe("settled operational evidence", () => {
+  it("matches executor IDs across background-result aliases", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "a", name: "remote_run", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "a",
+        toolName: "remote_run",
+        details: { status: "running", task_id: "job" },
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "b",
+            name: "remote_task_result",
+            arguments: { task_id: "durable" },
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "b",
+        toolName: "remote_task_result",
+        details: {
+          status: "completed",
+          task_id: "job",
+          background_task_id: "durable",
+          exit_code: 0,
+        },
+      },
+    ];
+    expect(hasUnsettledCostTools(messages)).toBe(false);
+  });
+
   const call = (id: string, name: string, args = {}) => ({
     role: "assistant",
     content: [{ type: "toolCall", id, name, arguments: args }],
