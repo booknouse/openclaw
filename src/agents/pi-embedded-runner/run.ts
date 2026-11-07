@@ -37,7 +37,7 @@ import {
   type ResolvedProviderAuth,
 } from "../model-auth.js";
 import { runWithModelFallback } from "../model-fallback.js";
-import { resolveCostRoutingExecutionPlan } from "../model-routing.js";
+import { rememberCostRoutingTurn, resolveCostRoutingExecutionPlan } from "../model-routing.js";
 import { normalizeProviderId } from "../model-selection.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
 import {
@@ -272,9 +272,11 @@ export async function runEmbeddedPiAgent(
     !!getCostRemoteOwner(params.runId, params.sessionKey ?? "") ||
     hasCostRemoteSpawn(params.runId, params.sessionKey ?? "") ||
     params.inputProvenance?.sourceTool === COST_REMOTE_RESUME_SOURCE;
-  return withCostRemoteRun(params, enabled, () =>
+  const result = await withCostRemoteRun(params, enabled, () =>
     runPlannedEmbeddedPiAgent(params, plan, routingStartedAt),
   );
+  await rememberCostRoutingTurn(params, plan, result);
+  return result;
 }
 
 async function runPlannedEmbeddedPiAgent(

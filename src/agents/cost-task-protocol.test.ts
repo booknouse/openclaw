@@ -91,3 +91,28 @@ describe("cost-only trusted spawn context and cancellation", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("optional cost implementation recovery contract", () => {
+  const recoverable = {
+    ...partial,
+    status: "blocked",
+    blocker: "The selected implementation failed",
+    recovery: {
+      kind: "implementation",
+      alternative: "Use another supported implementation in the same runtime",
+    },
+  };
+  it("accepts a candidate alternative without treating it as completion or new permission", () => {
+    expect(parseCostTaskResult(report(recoverable)).receipt?.recovery).toEqual(
+      recoverable.recovery,
+    );
+  });
+  it.each([
+    { ...recoverable, recovery: { kind: "permission", alternative: "Change access" } },
+    { ...recoverable, recovery: { kind: "implementation", alternative: "" } },
+    { ...recoverable, recovery: { kind: "implementation", alternative: "inspect", grant: true } },
+    { ...recoverable, status: "completed", remaining: [], blocker: null },
+  ])("rejects malformed or permission-granting recovery receipts", (value) => {
+    expect(parseCostTaskResult(report(value)).receipt).toBeUndefined();
+  });
+});

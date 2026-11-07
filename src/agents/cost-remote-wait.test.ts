@@ -56,6 +56,36 @@ afterEach(() => {
 });
 
 describe("cost-only remote execution lifecycle", () => {
+  it("aborts the runner even when the waiting tool's timer fires before the owner timer", async () => {
+    const p = params();
+    await withCostRemoteRun(p, true, async () => {
+      const ticket = runtime.prepare({
+        taskId: "job",
+        toolCallId: "timer-order",
+        toolName: "remote_run",
+      });
+      const original = setTimeout;
+      let expire: (() => void) | undefined;
+      const timer = vi
+        .spyOn(globalThis, "setTimeout")
+        .mockImplementation((callback, delay, ...args) => {
+          expire = () => callback(...args);
+          return original(callback, delay, ...args);
+        });
+      try {
+        const waiting = runtime.wait(ticket.id, p.abortSignal);
+        const rejected = expect(waiting).rejects.toThrow(/deadline/);
+        timer.mockRestore();
+        expect(expire).toBeDefined();
+        expire!();
+        await rejected;
+        expect(p.abortSignal?.aborted).toBe(true);
+      } finally {
+        timer.mockRestore();
+      }
+    });
+  });
+
   it("enforces the original deadline while waiting without another model turn", async () => {
     const p = { ...params(), timeoutMs: 100 };
     await withCostRemoteRun(p, true, async () => {

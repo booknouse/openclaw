@@ -607,7 +607,7 @@ async function maybeContinueCostTask(entry: SubagentRunRecord): Promise<boolean>
           other.childSessionKey === entry.childSessionKey &&
           !other.endedAt,
       ),
-    inspect: async () => {
+    inspect: async (recovery) => {
       const { isEmbeddedPiRunActive, waitForEmbeddedPiRunEnd, costToolsAreSettled } =
         await import("./cost-task.runtime.js");
       const child = unchangedCostSession(cfg, entry);
@@ -625,6 +625,8 @@ async function maybeContinueCostTask(entry: SubagentRunRecord): Promise<boolean>
           !(await costToolsAreSettled({
             sessionId: child.sessionId,
             sessionFile: child.sessionFile,
+            requireImplementationFailure: recovery?.kind === "implementation",
+            implementationSince: entry.startedAt ?? entry.createdAt,
             storePath: resolveStorePath(cfg.session?.store, {
               agentId: resolveAgentIdFromSessionKey(entry.childSessionKey),
             }),

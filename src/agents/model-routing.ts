@@ -7,7 +7,8 @@ import {
 } from "../routing/session-key.js";
 import { isRecord } from "../utils.js";
 import { resolveAgentConfig, resolveSessionAgentIds } from "./agent-scope.js";
-import { classifyCostTask } from "./cost-task-classifier.js";
+import { CostRoutingMemory } from "./cost-routing-memory.js";
+import { classifyCostTask, type CostTaskRelation } from "./cost-task-classifier.js";
 import { withCostTaskSpawnContext } from "./cost-task-protocol.js";
 import {
   buildModelAliasIndex,
@@ -19,6 +20,7 @@ import {
   type ModelRef,
 } from "./model-selection.js";
 import type { RunEmbeddedPiAgentParams } from "./pi-embedded-runner/run/params.js";
+import type { EmbeddedPiRunResult } from "./pi-embedded-runner/types.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { ToolInputError } from "./tools/common.js";
 
@@ -27,9 +29,10 @@ export type CostRoutingRole = "direct" | "orchestrator" | "primary";
 export type CostRoutingExecutionState = {
   spawns: Map<string, Promise<Awaited<ReturnType<AnyAgentTool["execute"]>>>>;
 };
-type CostRoutingExecutionPlan = CostRoutingModels & {
+export type CostRoutingExecutionPlan = CostRoutingModels & {
   role: CostRoutingRole;
   executionState?: CostRoutingExecutionState;
+  goalEntryId?: string;
 };
 type CostRoutingTurn = {
   role: "primary" | "orchestrator";
@@ -154,6 +157,48 @@ const ORCHESTRATION_TOOLS = new Set([
   "subagents",
 ]);
 
+function costRoutingKey(params: RunEmbeddedPiAgentParams, models: CostRoutingModels): string {
+  return JSON.stringify([
+    params.agentId,
+    params.agentDir,
+    params.workspaceDir,
+    params.sessionKey,
+    params.sessionId,
+    models.primary,
+    models.worker,
+  ]);
+}
+
+/** Persist only successfully handled external cost turns, never late child announcements. */
+export async function rememberCostRoutingTurn(
+  params: RunEmbeddedPiAgentParams,
+  plan: CostRoutingExecutionPlan | undefined,
+  result: EmbeddedPiRunResult,
+): Promise<void> {
+  if (
+    !plan ||
+    !resolveCostRoutingPlan(params) ||
+    (plan.role !== "primary" && plan.role !== "orchestrator") ||
+    (params.inputProvenance && params.inputProvenance.kind !== "external_user") ||
+    params.abortSignal?.aborted ||
+    result.meta.aborted ||
+    result.meta.error ||
+    result.meta.stopReason === "error" ||
+    result.payloads?.some((payload) => payload.isError)
+  ) {
+    return;
+  }
+  const key = costRoutingKey(params, plan);
+  if (lastExecutions.get(key)?.executionState !== plan.executionState) {
+    return;
+  }
+  try {
+    await new CostRoutingMemory().remember(key, plan.role, params, plan.goalEntryId);
+  } catch {
+    /* A routing optimization must not turn a successful user run into an error. */
+  }
+}
+
 export async function resolveCostRoutingExecutionPlan(
   params: RunEmbeddedPiAgentParams,
 ): Promise<CostRoutingExecutionPlan | undefined> {
@@ -162,15 +207,7 @@ export async function resolveCostRoutingExecutionPlan(
     return plan;
   }
   params.abortSignal?.throwIfAborted();
-  const key = JSON.stringify([
-    params.agentId,
-    params.agentDir,
-    params.workspaceDir,
-    params.sessionKey,
-    params.sessionId,
-    plan.primary,
-    plan.worker,
-  ]);
+  const key = costRoutingKey(params, plan);
   if (params.inputProvenance && params.inputProvenance.kind !== "external_user") {
     const source = params.inputProvenance.sourceSessionKey;
     const inherited = source
@@ -182,6 +219,8 @@ export async function resolveCostRoutingExecutionPlan(
     ...(params.abortSignal ? [params.abortSignal] : []),
     AbortSignal.timeout(Math.max(1, Math.floor(params.timeoutMs))),
   ]);
+  const previous = await new CostRoutingMemory().recall(key, params);
+  let relation: CostTaskRelation | undefined;
   const route = await classifyCostTask({
     config: params.config!,
     agentId: resolveSessionAgentIds({
@@ -191,10 +230,28 @@ export async function resolveCostRoutingExecutionPlan(
     }).sessionAgentId,
     agentDir: params.agentDir,
     task: params.modelRoutingPrompt ?? params.prompt,
+    ...(previous
+      ? {
+          previousTask: {
+            goal: previous.goal,
+            lastRequest: previous.lastRequest,
+            ...(previous.role
+              ? {
+                  route:
+                    previous.role === "primary" ? ("primary" as const) : ("secondary" as const),
+                }
+              : {}),
+            ...(previous.lastAssistant ? { lastAssistant: previous.lastAssistant } : {}),
+          },
+        }
+      : {}),
+    onDecision: (decision) => {
+      relation = decision.relation;
+    },
     sessionId: params.sessionId,
     runId: params.runId,
     signal,
-  }).catch(() => "secondary" as const);
+  }).catch(() => (previous?.role === "primary" ? ("primary" as const) : ("secondary" as const)));
   signal.throwIfAborted();
   const role = route === "primary" ? "primary" : "orchestrator";
   const execution: CostRoutingTurn = { role, executionState: { spawns: new Map() } };
@@ -203,7 +260,11 @@ export async function resolveCostRoutingExecutionPlan(
     lastExecutions.delete(lastExecutions.keys().next().value!);
   }
   lastExecutions.set(key, execution);
-  return { ...plan, ...execution };
+  return {
+    ...plan,
+    ...execution,
+    ...(previous && relation !== "new" ? { goalEntryId: previous.goalEntryId } : {}),
+  };
 }
 
 function spawnFingerprint(input: Record<string, unknown>): string {
@@ -221,8 +282,8 @@ function spawnFingerprint(input: Record<string, unknown>): string {
 export const COST_ORCHESTRATOR_PROMPT = [
   "Cost routing is enabled. You are the planner and final reviewer; delegate execution to sessions_spawn (runtime=subagent).",
   "Use the configured secondary model. For known same-agent delegation omit agentId/model; skip agents_list preflight. For cross-agent or unresolved targets, discover and verify allowed agents. Give a bounded brief: goal, user constraints and authorizations, evidence, paths and acceptance criteria; no full history/raw logs.",
-  "Prefer one worker for related steps. Steer only while running. The cost controller may continue safe partial work once in place within the original budget; no replacement workers to reset it or report progress. After spawning, sessions_yield; wait for push completion, no polling.",
-  "Remote work may remain pending after a worker ends. Keep background_task_id/task_id; use authorized read-only remote_task_result for requested result checks; do not spawn another worker to recover that result or repeat the operation. Missing/inaccessible results are not execution failure.",
+  "Specify outcomes; preserve user-required methods but leave other techniques flexible. Prefer one worker for related steps. Steer only while running. The controller permits one safe continuation within the original budget; no replacement workers to reset it. After spawning, sessions_yield; wait for push completion, no polling.",
+  "Remote work may outlive a worker. Keep background_task_id/task_id; use authorized read-only remote_task_result for requested checks; do not spawn another worker to recover that result. Never replay pending work or treat inaccessible results as failure.",
   "Require deterministic checks, concise results, evidence/artifact paths, check outcomes and unresolved risks. Review relevant evidence against the request before answering; no unsupported success claims. If supported, issue independent read-only evidence checks in one turn; dependent checks and writes stay sequential. Do not skip checks or enlarge reads just to batch. Request targeted corrections from the same worker when needed.",
   "Preserve authorization, tool, sandbox and data-access boundaries. If delegation is unavailable, report the blocker; do not claim execution or request broader access.",
 ].join("\n");
@@ -345,4 +406,4 @@ export function applyCostRoutingToolPolicy(
 }
 
 export const COST_WORKER_PROMPT =
-  "Cost routing worker: complete the bounded task, preserve the supplied user constraints and authorizations, and run appropriate checks. Return a concise result with evidence/artifact paths, check outcomes, and unresolved blockers. Avoid full transcripts, raw logs, repeated polling, or spawning agents just for progress updates.";
+  "Cost routing worker: complete the bounded task, preserve the supplied user constraints and authorizations, and run appropriate checks. Treat a preferred library or technique as an implementation choice unless required by the user. On a settled dependency error, try a feasible existing-runtime alternative within the same scope before reporting blocked; do not install, change configuration or switch interpreters/hosts without authorization. Return a concise result with evidence/artifact paths, check outcomes, and unresolved blockers. Avoid full transcripts, raw logs, repeated polling, or spawning agents just for progress updates.";

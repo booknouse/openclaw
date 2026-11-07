@@ -578,3 +578,81 @@ describe("cost-only task classifier", () => {
     expect(fetchWithSsrFGuard).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("semantic continuation routing only in cost mode", () => {
+  const previousTask = {
+    goal: "Design and implement a constrained scheduling algorithm",
+    lastRequest: "Review the proposed design before implementation",
+    route: "primary" as const,
+  };
+  it.each(["同意，执行", "Continue with the plan", "Sí, adelante", "أكمل الخطة"])(
+    "carries task context independent of confirmation language: %s",
+    async (task) => {
+      respond(reply('{"route":"secondary","relation":"continue"}'));
+      expect(await classifyCostTask({ ...params, task, previousTask })).toBe("primary");
+      const sent = JSON.parse(requestBody().messages[1].content);
+      expect(sent.task).toBe(task);
+      expect(sent.previous_task).toEqual({
+        goal: previousTask.goal,
+        last_request: previousTask.lastRequest,
+        route: "primary",
+      });
+      expect(fetchWithSsrFGuard).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("reclassifies an independent goal rather than permanently pinning the session", async () => {
+    respond(reply('{"route":"secondary","relation":"new"}'));
+    const observe = vi.fn();
+    expect(
+      await classifyCostTask({
+        ...params,
+        task: "Extract the supplied records",
+        previousTask,
+        onDecision: observe,
+      }),
+    ).toBe("secondary");
+    expect(observe).toHaveBeenCalledWith({ route: "secondary", relation: "new" });
+  });
+  it("can upgrade continuing work when new requirements need primary reasoning", async () => {
+    respond(reply('{"route":"primary","relation":"continue"}'));
+    expect(
+      await classifyCostTask({ ...params, previousTask: { ...previousTask, route: "secondary" } }),
+    ).toBe("primary");
+  });
+  it.each(['{"route":"secondary"}', '{"route":"secondary","relation":"unknown"}'])(
+    "does not downgrade established work on an invalid relation: %s",
+    async (answer) => {
+      respond(reply(answer));
+      expect(await classifyCostTask({ ...params, previousTask })).toBe("primary");
+      expect(logInfo.mock.calls[0][1]).toMatchObject({ source: "invalid", inherited: true });
+    },
+  );
+  it("does not guess that a failed classification started a new task", async () => {
+    respond({}, 503);
+    expect(await classifyCostTask({ ...params, previousTask })).toBe("primary");
+  });
+  it("still never classifies or inherits in off mode", async () => {
+    expect(
+      await classifyCostTask({
+        ...params,
+        config: { agents: { defaults: { modelRouting: "off" } } },
+        previousTask,
+      }),
+    ).toBe("secondary");
+    expect(fetchWithSsrFGuard).not.toHaveBeenCalled();
+  });
+  it("scrubs historical task context without logging its contents", async () => {
+    respond(reply('{"route":"secondary","relation":"continue"}'));
+    await classifyCostTask({
+      ...params,
+      previousTask: {
+        ...previousTask,
+        goal: "PRIVATE_GOAL api_key=synthetic-private-secret https://example.invalid/private /tmp/private-input",
+      },
+    });
+    const sent = JSON.stringify(requestBody());
+    expect(sent).not.toContain("synthetic-private-secret");
+    expect(sent).not.toContain("https://example.invalid/private");
+    expect(JSON.stringify(logInfo.mock.calls)).not.toContain("PRIVATE_GOAL");
+  });
+});

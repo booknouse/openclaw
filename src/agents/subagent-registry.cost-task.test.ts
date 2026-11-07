@@ -4,6 +4,7 @@ import type { SessionEntry } from "../config/sessions.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import { hasUnsettledCostTools } from "./cost-task-continuation.js";
 import { withCostTaskSpawnContext } from "./cost-task-protocol.js";
+import { hasRecoverableCostImplementationFailure } from "./cost-task-recovery.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const h = vi.hoisted(() => ({
@@ -76,10 +77,13 @@ vi.mock("./pi-embedded.js", () => ({
   waitForEmbeddedPiRunEnd: async () => true,
 }));
 vi.mock("./cost-task-tool-history.js", () => ({
-  costToolsAreSettled: async () => {
+  costToolsAreSettled: async (params?: { requireImplementationFailure?: boolean }) => {
     h.historyReads += 1;
     h.onHistory();
-    return !hasUnsettledCostTools(h.history);
+    return (
+      !hasUnsettledCostTools(h.history) &&
+      (!params?.requireImplementationFailure || hasRecoverableCostImplementationFailure(h.history))
+    );
   },
 }));
 vi.mock("../context-engine/init.js", () => ({ ensureContextEnginesInitialized: async () => {} }));
@@ -151,6 +155,60 @@ describe("cost registry completion integration", () => {
       data: { phase: "end", endedAt: Date.now() },
     });
   const dispatches = () => h.gateway.mock.calls.filter(([request]) => request.method === "agent");
+
+  it.each(["settled-failure", "permission-denied", "ordinary", "off"])(
+    "handles implementation recovery through the registry: %s",
+    async (kind) => {
+      if (kind === "off") {
+        h.config.agents!.defaults!.modelRouting = "off";
+      }
+      register(kind !== "ordinary");
+      h.reply =
+        "<cost_task_result>" +
+        JSON.stringify({
+          status: "blocked",
+          remaining: ["Finish and verify"],
+          blocker: "Selected approach failed",
+          pendingRemoteTasks: [],
+          safeToResume: true,
+          recovery: { kind: "implementation", alternative: "Use a supported in-scope alternative" },
+        }) +
+        "</cost_task_result>";
+      h.history = [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "failed", name: "exec", arguments: {} }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "failed",
+          toolName: "exec",
+          details: { status: "completed", exitCode: 1 },
+          content: [
+            {
+              type: "text",
+              text:
+                kind === "permission-denied" ? "Permission denied" : "Unsupported implementation",
+            },
+          ],
+        },
+      ];
+      end("initial");
+      if (kind === "settled-failure") {
+        await vi.waitFor(() => expect(dispatches()).toHaveLength(1));
+        expect(dispatches()[0][0].params?.message).toContain("implementation recovery");
+        const next = registry.listSubagentRunsForRequester(parent)[0];
+        expect(next.childSessionKey).toBe(child);
+        expect(next.costTask?.continuations).toBe(1);
+        end(next.runId);
+        await vi.waitFor(() => expect(h.announce).toHaveBeenCalledTimes(1));
+        expect(dispatches()).toHaveLength(1);
+      } else {
+        await vi.waitFor(() => expect(h.announce).toHaveBeenCalledTimes(1));
+        expect(dispatches()).toHaveLength(0);
+      }
+    },
+  );
 
   it("persists and resumes the same session/model once, then announces remaining partial work", async () => {
     register();

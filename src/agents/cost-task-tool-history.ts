@@ -2,12 +2,15 @@ import fs from "node:fs";
 import { scanSessionHistory } from "../gateway/session-history-scan.js";
 import { resolveSessionTranscriptCandidates } from "../gateway/session-utils.fs.js";
 import { hasUnsettledCostTools } from "./cost-task-continuation.js";
+import { hasRecoverableCostImplementationFailure } from "./cost-task-recovery.js";
 
 /** Inspect bounded native operational records, not UI-truncated chat history or a model catalog. */
 export async function costToolsAreSettled(params: {
   sessionId: string;
   storePath: string;
   sessionFile?: string;
+  requireImplementationFailure?: boolean;
+  implementationSince?: number;
 }): Promise<boolean> {
   const file = resolveSessionTranscriptCandidates(
     params.sessionId,
@@ -18,6 +21,7 @@ export async function costToolsAreSettled(params: {
     return false;
   }
   const messages: unknown[] = [];
+  const currentImplementation: unknown[] = [];
   let limited = false;
   const scan = await scanSessionHistory(
     file,
@@ -29,6 +33,12 @@ export async function costToolsAreSettled(params: {
       }
       if (entry.type === "message" && entry.message) {
         messages.push(entry.message);
+        if (
+          params.implementationSince === undefined ||
+          Date.parse(entry.timestamp) >= params.implementationSince
+        ) {
+          currentImplementation.push(entry.message);
+        }
       }
       return messages.length < 100;
     },
@@ -44,6 +54,8 @@ export async function costToolsAreSettled(params: {
     scan.complete &&
     !limited &&
     messages.length < 100 &&
-    !hasUnsettledCostTools(messages.toReversed())
+    !hasUnsettledCostTools(messages.toReversed()) &&
+    (!params.requireImplementationFailure ||
+      hasRecoverableCostImplementationFailure(currentImplementation.toReversed()))
   );
 }

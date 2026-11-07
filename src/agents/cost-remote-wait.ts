@@ -219,12 +219,16 @@ export const costRemoteRuntime = {
         };
         const aborted = () => finish(signal?.reason ?? new Error("Cost wait cancelled"));
         const timer = setTimeout(
-          () =>
+          () => {
+            // Both timers use the same deadline; their callback ordering is not guaranteed.
+            // Stop the runner before returning a tool error that a model could handle.
+            aborters.get(owner.runId)?.("Cost task deadline reached");
             finish(
               new Error(
                 `Cost task deadline reached; existing task ${record.taskId} was not resubmitted`,
               ),
-            ),
+            );
+          },
           Math.max(1, owner.deadlineAt - Date.now()),
         );
         wake.set(id, () => finish());

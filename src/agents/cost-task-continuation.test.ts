@@ -29,7 +29,9 @@ function entry(): SubagentRunRecord {
 function setup(run = entry()) {
   let current = true;
   let allowed = true;
-  const dispatch = vi.fn(async (runId: string) => ({ runId }));
+  const dispatch = vi.fn(async (runId: string, _remaining: number, _message: string) => ({
+    runId,
+  }));
   const options = {
     entry: run,
     now: () => 10_000,
@@ -264,4 +266,72 @@ describe("settled operational evidence", () => {
       ]),
     ).toBe(false);
   });
+});
+
+describe("bounded implementation recovery", () => {
+  function recoveryEntry() {
+    const run = entry();
+    run.frozenResultText =
+      "<cost_task_result>" +
+      JSON.stringify({
+        status: "blocked",
+        remaining: ["Complete the deliverable"],
+        blocker: "Chosen implementation failed",
+        pendingRemoteTasks: [],
+        safeToResume: true,
+        recovery: {
+          kind: "implementation",
+          alternative: "Use a supported alternative within the current runtime",
+        },
+      }) +
+      "</cost_task_result>";
+    return run;
+  }
+  it("requires native evidence and uses the same once-only budget and dispatch reservation", async () => {
+    const s = setup(recoveryEntry());
+    expect(await continueCostTaskOnce(s.options)).toBe(true);
+    expect(s.options.inspect).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "implementation" }),
+    );
+    expect(s.dispatch.mock.calls[0]).toEqual([
+      expect.stringMatching(/^cost-continuation:/),
+      50,
+      expect.stringContaining("settled execution failure"),
+    ]);
+    expect(s.dispatch.mock.calls[0][2]).toContain("unless already authorized");
+    expect(await continueCostTaskOnce(s.options)).toBe(false);
+  });
+  it("does not recover based only on the model's claimed alternative", async () => {
+    const s = setup(recoveryEntry());
+    s.options.inspect.mockResolvedValue(false);
+    expect(await continueCostTaskOnce(s.options)).toBe(false);
+    expect(s.dispatch).not.toHaveBeenCalled();
+  });
+  it.each(["cancelled", "expired", "already-retried", "non-cost", "pending"])(
+    "preserves the %s guard for implementation recovery",
+    async (kind) => {
+      const run = recoveryEntry();
+      if (kind === "cancelled") {
+        run.costTask!.cancelled = true;
+      }
+      if (kind === "expired") {
+        run.costTask!.deadlineAt = 1;
+      }
+      if (kind === "already-retried") {
+        run.costTask!.continuations = 1;
+      }
+      if (kind === "non-cost") {
+        run.costTask = undefined;
+      }
+      if (kind === "pending") {
+        run.frozenResultText = run.frozenResultText!.replace(
+          '"pendingRemoteTasks":[]',
+          '"pendingRemoteTasks":["job"]',
+        );
+      }
+      const s = setup(run);
+      expect(await continueCostTaskOnce(s.options)).toBe(false);
+      expect(s.dispatch).not.toHaveBeenCalled();
+    },
+  );
 });

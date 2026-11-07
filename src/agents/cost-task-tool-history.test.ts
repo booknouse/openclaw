@@ -113,3 +113,67 @@ it("rejects a transcript with the wrong session identity or missing file", async
     },
   );
 });
+
+it("requires settled native failure evidence before retrying a blocked implementation", async () => {
+  for (const [exitCode, text, expected] of [
+    [1, "Unsupported implementation choice", true],
+    [0, "Unsupported implementation choice", false],
+    [1, "Permission denied", false],
+  ] as const) {
+    await fixture(
+      [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "attempt", name: "exec", arguments: {} }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "attempt",
+          toolName: "exec",
+          details: { status: "completed", exitCode },
+          content: [{ type: "text", text }],
+        },
+      ],
+      async (params) => {
+        expect(await costToolsAreSettled({ ...params, requireImplementationFailure: true })).toBe(
+          expected,
+        );
+      },
+    );
+  }
+});
+
+it("does not authorize current recovery from an unrelated earlier run's failure", async () => {
+  await fixture(
+    [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "old-attempt", name: "exec", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "old-attempt",
+        toolName: "exec",
+        details: { status: "completed", exitCode: 1 },
+        content: [{ type: "text", text: "Old implementation failure" }],
+      },
+      { role: "user", content: [{ type: "text", text: "A separate task" }] },
+    ],
+    async (params) => {
+      expect(
+        await costToolsAreSettled({
+          ...params,
+          requireImplementationFailure: true,
+          implementationSince: 2,
+        }),
+      ).toBe(false);
+      expect(
+        await costToolsAreSettled({
+          ...params,
+          requireImplementationFailure: true,
+          implementationSince: 0,
+        }),
+      ).toBe(true);
+    },
+  );
+});

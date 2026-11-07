@@ -2,6 +2,14 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.16
+
+### Fixes
+
+- Agents/cost routing: classify follow-up requests with bounded native task history and preserve an established primary route when the task continues or the continuation decision is unavailable. Keep new-task classification and non-cost routing behavior unchanged.
+- Agents/cost recovery: allow one bounded continuation for a concrete alternative implementation only when native tool evidence confirms the current execution failed and all operations have settled. Preserve original permissions, session, model, cancellation, and deadline checks; never recover automatically from authorization denials or unknown execution states.
+- Agents/cost waits: abort the execution runner before reporting a wait timeout, including when the wait timer fires before the overall task deadline timer.
+
 ## 2026.3.13-cortex.15
 
 ### Fixes

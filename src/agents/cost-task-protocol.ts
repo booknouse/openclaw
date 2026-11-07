@@ -12,12 +12,14 @@ export type CostTaskState = {
   cancelled?: boolean;
   dispatchUnconfirmed?: boolean;
 };
+export type CostImplementationRecovery = { kind: "implementation"; alternative: string };
 export type CostTaskReceipt = {
   status: "completed" | "partial" | "blocked";
   remaining: string[];
   blocker: string | null;
   pendingRemoteTasks: string[];
   safeToResume: boolean;
+  recovery?: CostImplementationRecovery;
 };
 type CostSpawnContext = {
   requesterSessionKey: string;
@@ -79,7 +81,18 @@ export function parseCostTaskResult(reply: string): { text: string; receipt?: Co
     const value: unknown = JSON.parse(raw);
     if (
       !isRecord(value) ||
-      Object.keys(value).length !== 5 ||
+      Object.keys(value).some(
+        (key) =>
+          ![
+            "status",
+            "remaining",
+            "blocker",
+            "pendingRemoteTasks",
+            "safeToResume",
+            "recovery",
+          ].includes(key),
+      ) ||
+      (Object.keys(value).length !== 5 && Object.keys(value).length !== 6) ||
       !["completed", "partial", "blocked"].includes(String(value.status)) ||
       !stringList(value.remaining) ||
       !stringList(value.pendingRemoteTasks) ||
@@ -90,6 +103,18 @@ export function parseCostTaskResult(reply: string): { text: string; receipt?: Co
           value.blocker.length <= 400)
       ) ||
       typeof value.safeToResume !== "boolean"
+    ) {
+      return { text: trimmed };
+    }
+    if (
+      value.recovery !== undefined &&
+      (!isRecord(value.recovery) ||
+        Object.keys(value.recovery).length !== 2 ||
+        value.recovery.kind !== "implementation" ||
+        typeof value.recovery.alternative !== "string" ||
+        !value.recovery.alternative.trim() ||
+        value.recovery.alternative.length > 400 ||
+        value.status !== "blocked")
     ) {
       return { text: trimmed };
     }
@@ -119,8 +144,9 @@ export function costTaskStatusLabel(receipt?: CostTaskReceipt): string {
     : `${receipt.status}; task not completed`;
 }
 export const COST_TASK_RECEIPT_PROMPT = [
-  "Finish the authorized goal before returning. A successful command or backup is not task completion.",
-  "If work remains without a real blocker, continue implementing within the original budget. Do not stop just to report a plan.",
-  "At the end of your final concise report, outside code fences, append one <cost_task_result> JSON object with exactly status (completed, partial or blocked), remaining (array), blocker (string or null), pendingRemoteTasks (array), and safeToResume (boolean), followed by </cost_task_result>.",
-  "Use completed only when the requested work and checks are done. For partial list remaining work. For blocked name the actual external blocker. List every running remote task ID; never resubmit it. Set safeToResume=true only when all writes and remote operations are settled and continuation can inspect existing state without replaying completed operations. Otherwise false.",
+  "Complete the authorized goal and checks; a command or backup alone is not completion. Continue remaining work within the original budget, not just a plan.",
+  "After the final report append one <cost_task_result> JSON object with status (completed|partial|blocked), remaining (array), blocker (string|null), pendingRemoteTasks (array), safeToResume (boolean), then </cost_task_result>.",
+  "Completed requires the goal and checks done. Partial lists remaining work. Blocked requires an actual external constraint. List running remote task IDs; never resubmit them. safeToResume=true requires all operations settled and inspection without replaying completed work.",
+  "A failed implementation choice is not necessarily an external blocker. Try feasible existing-runtime alternatives within scope; no dependency installation, configuration/permission changes or interpreter/host switching unless already authorized.",
+  'If returning blocked after a settled implementation failure with a feasible in-scope alternative, optionally add recovery: {"kind":"implementation","alternative":"brief approach, no commands or credentials"}. Never use this for missing user data/approval, authorization failures, licences, or unknown/running execution. It is a candidate for verification, not new authority.',
 ].join("\n");
