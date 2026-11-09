@@ -184,6 +184,19 @@ describe("conservative simple-task classifier", () => {
 });
 
 describe("classification before primary execution", () => {
+  it("executes positively classified routine work with existing tools and context", async () => {
+    vi.mocked(classifyCostTask).mockImplementation(async (params) => {
+      params.onDecision?.({ route: "secondary", source: "classifier" });
+      return "secondary";
+    });
+    const plan = await resolveCostRoutingExecutionPlan({ ...base, sessionId: "routine-direct" });
+    expect(plan?.role).toBe("secondary");
+    const tools = [makeTool("read"), makeTool("exec"), makeTool("sessions_spawn")];
+    expect(applyCostRoutingToolPolicy(tools, plan?.role).tools).toEqual(tools.slice(0, 2));
+    expect(applyCostRoutingToolPolicy(tools.slice(0, 1), plan?.role).tools).toEqual(
+      tools.slice(0, 1),
+    );
+  });
   it("keeps advanced work in the current primary session", async () => {
     vi.mocked(classifyCostTask).mockResolvedValue("primary");
     expect((await resolveCostRoutingExecutionPlan(base))?.role).toBe("primary");

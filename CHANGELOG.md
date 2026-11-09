@@ -2,6 +2,12 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.17
+
+### Changes
+
+- Agents/cost routing: run tasks explicitly classified as routine with the secondary model in the current session, removing the primary-model delegation and review round trips while preserving conversation context, tool permissions, and remote wait and cancellation controls.
+
 ## 2026.3.13-cortex.16
 
 ### Fixes

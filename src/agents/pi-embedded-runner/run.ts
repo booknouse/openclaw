@@ -268,6 +268,7 @@ export async function runEmbeddedPiAgent(
     await import("../cost-remote.runtime.js");
   const enabled =
     plan?.role === "primary" ||
+    plan?.role === "secondary" ||
     plan?.role === "orchestrator" ||
     !!getCostRemoteOwner(params.runId, params.sessionKey ?? "") ||
     hasCostRemoteSpawn(params.runId, params.sessionKey ?? "") ||
@@ -294,6 +295,26 @@ async function runPlannedEmbeddedPiAgent(
   const remainingTimeoutMs = params.timeoutMs - (Date.now() - routingStartedAt);
   if (remainingTimeoutMs <= 0) {
     throw new Error("Cost-routed run timed out during classification");
+  }
+  if (plan.role === "secondary") {
+    // Unlike text-only routing, never replay tool execution through a model fallback.
+    return runWithModelRoutingLifecycle(params, (routingParams) =>
+      runWithOverflowRecovery(
+        {
+          ...routingParams,
+          provider: plan.worker.provider,
+          model: plan.worker.model,
+          authProfileId:
+            plan.worker.provider === params.provider ? params.authProfileId : undefined,
+          authProfileIdSource:
+            plan.worker.provider === params.provider ? params.authProfileIdSource : undefined,
+          timeoutMs: remainingTimeoutMs,
+          costRoutingRole: "secondary",
+          costRoutingState: plan.executionState,
+        },
+        runEmbeddedPiAgentInner,
+      ),
+    );
   }
   if (plan.role !== "direct") {
     return runWithOverflowRecovery(

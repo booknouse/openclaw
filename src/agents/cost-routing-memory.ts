@@ -6,7 +6,7 @@ import { scanSessionHistory } from "../gateway/session-history-scan.js";
 import { hasInterSessionUserProvenance } from "../sessions/input-provenance.js";
 import { isRecord } from "../utils.js";
 
-export type RememberedCostRole = "primary" | "orchestrator";
+export type RememberedCostRole = "primary" | "orchestrator" | "secondary";
 export type CostRoutingContext = {
   role?: RememberedCostRole;
   goalEntryId: string;
@@ -118,7 +118,7 @@ export class CostRoutingMemory {
         !isRecord(record) ||
         record.version !== 1 ||
         record.key !== digest(key) ||
-        !["primary", "orchestrator"].includes(String(record.role)) ||
+        !["primary", "orchestrator", "secondary"].includes(String(record.role)) ||
         typeof record.userEntryId !== "string" ||
         typeof record.goalEntryId !== "string" ||
         typeof record.updatedAt !== "number" ||

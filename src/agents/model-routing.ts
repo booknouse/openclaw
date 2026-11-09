@@ -25,7 +25,7 @@ import type { AnyAgentTool } from "./tools/common.js";
 import { ToolInputError } from "./tools/common.js";
 
 export type CostRoutingModels = { primary: ModelRef; worker: ModelRef };
-export type CostRoutingRole = "direct" | "orchestrator" | "primary";
+export type CostRoutingRole = "direct" | "orchestrator" | "primary" | "secondary";
 export type CostRoutingExecutionState = {
   spawns: Map<string, Promise<Awaited<ReturnType<AnyAgentTool["execute"]>>>>;
 };
@@ -35,7 +35,7 @@ export type CostRoutingExecutionPlan = CostRoutingModels & {
   goalEntryId?: string;
 };
 type CostRoutingTurn = {
-  role: "primary" | "orchestrator";
+  role: "primary" | "orchestrator" | "secondary";
   executionState: CostRoutingExecutionState;
 };
 const lastExecutions = new Map<string, CostRoutingTurn>();
@@ -178,7 +178,7 @@ export async function rememberCostRoutingTurn(
   if (
     !plan ||
     !resolveCostRoutingPlan(params) ||
-    (plan.role !== "primary" && plan.role !== "orchestrator") ||
+    (plan.role !== "primary" && plan.role !== "orchestrator" && plan.role !== "secondary") ||
     (params.inputProvenance && params.inputProvenance.kind !== "external_user") ||
     params.abortSignal?.aborted ||
     result.meta.aborted ||
@@ -221,6 +221,7 @@ export async function resolveCostRoutingExecutionPlan(
   ]);
   const previous = await new CostRoutingMemory().recall(key, params);
   let relation: CostTaskRelation | undefined;
+  let classified = false;
   const route = await classifyCostTask({
     config: params.config!,
     agentId: resolveSessionAgentIds({
@@ -247,13 +248,14 @@ export async function resolveCostRoutingExecutionPlan(
       : {}),
     onDecision: (decision) => {
       relation = decision.relation;
+      classified = decision.source === "classifier";
     },
     sessionId: params.sessionId,
     runId: params.runId,
     signal,
   }).catch(() => (previous?.role === "primary" ? ("primary" as const) : ("secondary" as const)));
   signal.throwIfAborted();
-  const role = route === "primary" ? "primary" : "orchestrator";
+  const role = route === "primary" ? "primary" : classified ? "secondary" : "orchestrator";
   const execution: CostRoutingTurn = { role, executionState: { spawns: new Map() } };
   executionOwners.set(execution.executionState, key);
   if (!lastExecutions.has(key) && lastExecutions.size >= 256) {
@@ -313,6 +315,13 @@ export function applyCostRoutingToolPolicy(
   }
   if (role === "direct") {
     return { tools: [] };
+  }
+  if (role === "secondary") {
+    // Execute in the existing transcript; classification never grants additional tools.
+    return {
+      tools: tools.filter((tool) => tool.name !== "sessions_spawn"),
+      systemPrompt: COST_SECONDARY_PROMPT,
+    };
   }
   if (!tools.some((tool) => tool.name === "sessions_spawn")) {
     // Restricted agents keep their authorized flow rather than losing the ability to act.
@@ -404,6 +413,9 @@ export function applyCostRoutingToolPolicy(
     systemPrompt: role === "primary" ? COST_PRIMARY_PROMPT : COST_ORCHESTRATOR_PROMPT,
   };
 }
+
+export const COST_SECONDARY_PROMPT =
+  "Cost routing selected secondary execution. Complete the authorized task directly in this session using the full conversation context. Preserve user constraints and permissions. Verify actual results and deliver requested artifacts before reporting completion. If an implementation fails, try an available alternative within the same scope; do not install dependencies, change configuration or switch hosts without authorization. Preserve remote task identifiers, wait for pending work, and do not replay commands whose execution state is unknown. Report genuine blockers accurately.";
 
 export const COST_WORKER_PROMPT =
   "Cost routing worker: complete the bounded task, preserve the supplied user constraints and authorizations, and run appropriate checks. Treat a preferred library or technique as an implementation choice unless required by the user. On a settled dependency error, try a feasible existing-runtime alternative within the same scope before reporting blocked; do not install, change configuration or switch interpreters/hosts without authorization. Return a concise result with evidence/artifact paths, check outcomes, and unresolved blockers. Avoid full transcripts, raw logs, repeated polling, or spawning agents just for progress updates.";

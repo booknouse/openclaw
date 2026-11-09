@@ -611,7 +611,11 @@ describe("semantic continuation routing only in cost mode", () => {
         onDecision: observe,
       }),
     ).toBe("secondary");
-    expect(observe).toHaveBeenCalledWith({ route: "secondary", relation: "new" });
+    expect(observe).toHaveBeenCalledWith({
+      route: "secondary",
+      relation: "new",
+      source: "classifier",
+    });
   });
   it("can upgrade continuing work when new requirements need primary reasoning", async () => {
     respond(reply('{"route":"primary","relation":"continue"}'));

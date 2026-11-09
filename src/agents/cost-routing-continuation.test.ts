@@ -69,6 +69,24 @@ afterEach(async () => {
 });
 
 describe("task context at the cost execution boundary", () => {
+  it("remembers direct secondary execution and classifies short follow-ups with its goal", async () => {
+    vi.mocked(classifyCostTask).mockImplementation(async (p) => {
+      p.onDecision?.({ route: "secondary", source: "classifier" });
+      return "secondary";
+    });
+    const first = await resolveCostRoutingExecutionPlan(params);
+    expect(first?.role).toBe("secondary");
+    await rememberCostRoutingTurn(params, first, result);
+    vi.mocked(classifyCostTask).mockImplementation(async (p) => {
+      expect(p.previousTask).toMatchObject({ goal: params.prompt, route: "secondary" });
+      p.onDecision?.({ route: "primary", relation: "continue", source: "classifier" });
+      return "primary";
+    });
+    expect(
+      (await resolveCostRoutingExecutionPlan({ ...params, prompt: "继续", runId: "next" }))?.role,
+    ).toBe("primary");
+  });
+
   it("carries the original goal through confirmed user turns and persists the native anchor", async () => {
     const first = await resolveCostRoutingExecutionPlan(params);
     await rememberCostRoutingTurn(params, first, result);

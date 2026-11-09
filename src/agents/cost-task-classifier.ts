@@ -297,7 +297,11 @@ export async function classifyCostTask(params: {
   agentDir?: string;
   task: string;
   previousTask?: PreviousCostTask;
-  onDecision?: (decision: { route: CostTaskRoute; relation?: CostTaskRelation }) => void;
+  onDecision?: (decision: {
+    route: CostTaskRoute;
+    relation?: CostTaskRelation;
+    source?: Decision["source"];
+  }) => void;
   signal?: AbortSignal;
   sessionId?: string;
   runId?: string;
@@ -358,7 +362,7 @@ export async function classifyCostTask(params: {
     const inherited = !!previousTask && decision.relation !== "new";
     const route = inherited && previousTask.route === "primary" ? "primary" : decision.route;
     try {
-      params.onDecision?.({ route, relation: decision.relation });
+      params.onDecision?.({ route, relation: decision.relation, source: decision.source });
     } catch {
       /* Local diagnostics only. */
     }

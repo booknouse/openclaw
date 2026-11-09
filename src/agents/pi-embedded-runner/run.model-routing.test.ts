@@ -52,6 +52,38 @@ describe("embedded cost-routing integration", () => {
     mockedRunEmbeddedAttempt.mockReset().mockResolvedValue(makeAttemptResult());
     vi.mocked(classifyCostTask).mockReset().mockResolvedValue("secondary");
   });
+  it("executes classified routine tools in the original session without a parent model call", async () => {
+    vi.mocked(classifyCostTask).mockImplementation(async (params) => {
+      params.onDecision?.({ route: "secondary", source: "classifier" });
+      return "secondary";
+    });
+    await runEmbeddedPiAgent({ ...base, prompt: "Generate and verify the requested report" });
+    expect(runWithModelFallback).not.toHaveBeenCalled();
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelId: "terra",
+        costRoutingRole: "secondary",
+        sessionId: base.sessionId,
+        sessionKey: base.sessionKey,
+      }),
+    );
+  });
+
+  it("does not retry a tool-capable secondary run as another model on failure", async () => {
+    vi.mocked(classifyCostTask).mockImplementation(async (p) => {
+      p.onDecision?.({ route: "secondary", source: "classifier" });
+      return "secondary";
+    });
+    mockedRunEmbeddedAttempt.mockRejectedValueOnce(
+      new FailoverError("provider failed", { reason: "model_not_found" }),
+    );
+    await expect(
+      runEmbeddedPiAgent({ ...base, prompt: "Run the authorized steps" }),
+    ).rejects.toThrow("provider failed");
+    expect(runWithModelFallback).not.toHaveBeenCalled();
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+  });
   it("makes only one worker model attempt for a simple request", async () => {
     await runEmbeddedPiAgent({ ...base, prompt: "翻译成中文：Good morning." });
     expect(runWithModelFallback).toHaveBeenCalledWith(
