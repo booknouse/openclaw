@@ -32,6 +32,7 @@ export interface ProcessSession {
   command: string;
   scopeKey?: string;
   sessionKey?: string;
+  cancelOnSessionAbort?: boolean;
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   exitNotified?: boolean;
@@ -59,6 +60,7 @@ export interface ProcessSession {
 
 export interface FinishedSession {
   id: string;
+  cancelOnSessionAbort?: boolean;
   sessionKey?: string;
   exitObserved?: boolean;
   command: string;
@@ -204,6 +206,7 @@ function moveToFinished(session: ProcessSession, status: ProcessStatus) {
     id: session.id,
     command: session.command,
     sessionKey: session.sessionKey,
+    cancelOnSessionAbort: session.cancelOnSessionAbort,
     exitObserved: session.exitObserved,
     scopeKey: session.scopeKey,
     startedAt: session.startedAt,

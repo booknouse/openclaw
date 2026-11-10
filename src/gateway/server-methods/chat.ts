@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { cancelForegroundExecForSession } from "../../agents/bash-process-cancel.js";
 import { getCompactionStatus } from "../../agents/compaction-status.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
@@ -840,9 +841,11 @@ function abortChatRunsForSessionKeyWithPartials(params: {
     sessionKey: params.sessionKey,
     requester: params.requester,
   });
+  const foregroundExecCancelled =
+    params.requester.isAdmin && cancelForegroundExecForSession(params.sessionKey);
   if (authorizedRunIds.length === 0) {
     return {
-      aborted: false,
+      aborted: foregroundExecCancelled,
       runIds: [],
       unauthorized: matchedSessionRuns > 0,
     };
@@ -865,7 +868,11 @@ function abortChatRunsForSessionKeyWithPartials(params: {
       runIds.push(runId);
     }
   }
-  const res = { aborted: runIds.length > 0, runIds, unauthorized: false };
+  const res = {
+    aborted: runIds.length > 0 || foregroundExecCancelled,
+    runIds,
+    unauthorized: false,
+  };
   if (res.aborted) {
     persistAbortedPartials({
       context: params.context,
@@ -1096,7 +1103,12 @@ export const chatHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
         return;
       }
-      respond(true, { ok: true, aborted: res.aborted, runIds: res.runIds });
+      respond(true, {
+        ok: true,
+        aborted: res.aborted,
+        runIds: res.runIds,
+        ...(requester.isAdmin ? { foregroundExecChecked: true } : {}),
+      });
       return;
     }
 
@@ -1116,6 +1128,10 @@ export const chatHandlers: GatewayRequestHandlers = {
     if (!canRequesterAbortChatRun(active, requester)) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
       return;
+    }
+
+    if (requester.isAdmin) {
+      cancelForegroundExecForSession(rawSessionKey);
     }
 
     const partialText = context.chatRunBuffers.get(runId);

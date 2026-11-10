@@ -2,6 +2,12 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.18
+
+### Fixes
+
+- Tools/exec: stop implicitly yielded foreground commands on administrator-authorized chat cancellation, including after the model response has ended, and discard their completion wakes. Apply the same behavior in cost and non-cost modes while preserving explicit background jobs, other sessions, and existing non-administrator and stale-run authorization boundaries.
+
 ## 2026.3.13-cortex.17
 
 ### Changes
