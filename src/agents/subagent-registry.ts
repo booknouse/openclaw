@@ -516,6 +516,19 @@ function unchangedCostSession(
   return entry.model && current === entry.model ? child : undefined;
 }
 
+export function getForegroundRemoteOwner(
+  runId: string,
+  sessionKey: string,
+): SubagentRunRecord | undefined {
+  const entry = getSubagentRunsSnapshotForRead(subagentRuns).get(runId);
+  return entry?.childSessionKey === sessionKey &&
+    !entry.costTask?.cancelled &&
+    !entry.cleanupCompletedAt &&
+    entry.suppressAnnounceReason !== "killed"
+    ? entry
+    : undefined;
+}
+
 export function getCostRemoteOwner(
   runId: string,
   sessionKey: string,

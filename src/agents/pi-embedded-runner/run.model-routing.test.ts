@@ -1,6 +1,7 @@
-import "./run.overflow-compaction.mocks.shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import "./run.overflow-compaction.mocks.shared.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { costRemoteRuntime } from "../cost-remote-wait.js";
 import { classifyCostTask } from "../cost-task-classifier.js";
 import { FailoverError } from "../failover-error.js";
 import { getApiKeyForModel } from "../model-auth.js";
@@ -51,6 +52,29 @@ describe("embedded cost-routing integration", () => {
     mockedGlobalHookRunner.hasHooks.mockReturnValue(false);
     mockedRunEmbeddedAttempt.mockReset().mockResolvedValue(makeAttemptResult());
     vi.mocked(classifyCostTask).mockReset().mockResolvedValue("secondary");
+  });
+
+  it("keeps the primary model with routing off while exposing foreground ownership", async () => {
+    const cfg = structuredClone(config);
+    cfg.agents!.defaults!.modelRouting = "off";
+    mockedRunEmbeddedAttempt.mockImplementationOnce(async () => {
+      expect(costRemoteRuntime.current()?.runId).toBe(base.runId);
+      return makeAttemptResult();
+    });
+    await runEmbeddedPiAgent({
+      ...base,
+      config: cfg,
+      sessionKey: "agent:main:tenant:alice:web:fixture:role:user",
+      prompt: "Run and wait",
+    });
+    expect(classifyCostTask).not.toHaveBeenCalled();
+    expect(runWithModelFallback).not.toHaveBeenCalled();
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt.mock.calls[0][0]).toMatchObject({
+      modelId: "sol",
+      costRoutingRole: undefined,
+    });
+    expect(costRemoteRuntime.current()).toBeUndefined();
   });
   it("executes classified routine tools in the original session without a parent model call", async () => {
     vi.mocked(classifyCostTask).mockImplementation(async (params) => {

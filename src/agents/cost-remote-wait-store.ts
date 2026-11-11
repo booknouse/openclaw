@@ -12,6 +12,7 @@ export type CostRemoteOwner = {
   model: string;
   deadlineAt: number;
   startedAt: number;
+  routingIndependent?: boolean;
   parentSessionKey?: string;
   parentSessionId?: string;
   extraSystemPrompt?: string;

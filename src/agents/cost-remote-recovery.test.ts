@@ -26,6 +26,7 @@ vi.mock("../gateway/call.js", () => ({ callGateway: h.rpc }));
 vi.mock("./pi-embedded.js", () => ({ isEmbeddedPiRunActive: h.active }));
 vi.mock("./subagent-registry-runtime.js", () => ({
   getCostRemoteOwner: h.child,
+  getForegroundRemoteOwner: h.child,
   replaceSubagentRunAfterSteer: h.replace,
 }));
 vi.mock("./session-write-lock.js", () => ({ acquireSessionWriteLock: h.lock }));
@@ -229,4 +230,16 @@ describe("cost remote recovery dispatch", () => {
     );
     expect(costTask.continuations).toBe(1);
   });
+});
+
+it("resumes a new routing-independent business wait with routing off", async () => {
+  const item = ready();
+  item.owner.routingIndependent = true;
+  item.owner.sessionKey = "agent:alice:tenant:alice:web:fixture:role:user";
+  h.sessions[item.owner.sessionKey] = h.sessions["agent:alice:main"];
+  h.config.agents.defaults.modelRouting = "off";
+  costRemoteStore().save(item);
+  await recoverCostRemoteRun(item);
+  expect(h.rpc).toHaveBeenCalledOnce();
+  expect(h.rpc.mock.calls[0][0].params.sessionKey).toBe(item.owner.sessionKey);
 });

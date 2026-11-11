@@ -4,7 +4,21 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ directory: "", recover: vi.fn(), child: vi.fn() }));
 vi.mock("../config/paths.js", () => ({ resolveStateDir: () => mocks.directory }));
-vi.mock("./subagent-registry-runtime.js", () => ({ getCostRemoteOwner: mocks.child }));
+vi.mock("./subagent-registry-runtime.js", () => ({
+  getCostRemoteOwner: mocks.child,
+  getForegroundRemoteOwner: mocks.child,
+}));
+vi.mock("../config/config.js", () => ({ loadConfig: () => ({}) }));
+vi.mock("../config/sessions.js", () => ({
+  loadSessionStore: () => ({
+    "agent:alice:subagent:plain": {
+      sessionId: "session",
+      spawnedBy: "agent:alice:tenant:alice:web:fixture:role:user",
+    },
+    "agent:alice:tenant:alice:web:fixture:role:user": { sessionId: "parent" },
+  }),
+  resolveStorePath: () => "test-sessions",
+}));
 vi.mock("./cost-remote-recovery.js", () => ({
   recoverCostRemoteRun: mocks.recover,
   costRemoteOwnerIsCurrent: () => true,
@@ -281,5 +295,22 @@ describe("cost-only remote execution lifecycle", () => {
       expect(ticket.deadlineAt).toBe(deadlineAt);
       expect(costRemoteStore().read(ticket.id)?.owner.parentSessionId).toBe("parent");
     });
+  });
+});
+
+it("persists non-cost delegated ownership without manufacturing cost routing metadata", async () => {
+  const p = { ...params(), sessionKey: "agent:alice:subagent:plain", config: {} };
+  mocks.child.mockReturnValue({
+    childSessionKey: p.sessionKey,
+    requesterSessionKey: "agent:alice:tenant:alice:web:fixture:role:user",
+  });
+  await withCostRemoteRun(p, true, async () => {
+    const ticket = runtime.prepare({ taskId: "job", toolCallId: "call", toolName: "remote_run" });
+    expect(costRemoteStore().read(ticket.id)?.owner).toMatchObject({
+      routingIndependent: true,
+      parentSessionId: "parent",
+      model: "test/model",
+    });
+    expect(mocks.child.mock.results[0].value.costTask).toBeUndefined();
   });
 });

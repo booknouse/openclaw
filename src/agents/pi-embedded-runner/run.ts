@@ -29,6 +29,7 @@ import {
 } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
+import { foregroundRemoteContext } from "../foreground-remote-session.js";
 import {
   applyLocalNoAuthHeaderOverride,
   ensureAuthProfileStore,
@@ -267,6 +268,7 @@ export async function runEmbeddedPiAgent(
   const { withCostRemoteRun, hasCostRemoteSpawn, COST_REMOTE_RESUME_SOURCE } =
     await import("../cost-remote.runtime.js");
   const enabled =
+    !!foregroundRemoteContext(params.sessionKey, params.config) ||
     plan?.role === "primary" ||
     plan?.role === "secondary" ||
     plan?.role === "orchestrator" ||

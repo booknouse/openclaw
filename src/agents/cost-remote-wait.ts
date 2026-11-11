@@ -7,6 +7,7 @@ import {
   type CostRemoteOwner,
   type CostRemoteWait,
 } from "./cost-remote-wait-store.js";
+import { foregroundRemoteContext } from "./foreground-remote-session.js";
 import type { RunEmbeddedPiAgentParams } from "./pi-embedded-runner/run/params.js";
 
 // Plugin SDK and agent entrypoints are emitted into different build chunks.
@@ -53,6 +54,7 @@ export async function withCostRemoteRun<T>(
   if (!enabled || !params.sessionKey) {
     return scope.exit(run);
   }
+  const foreground = foregroundRemoteContext(params.sessionKey, params.config);
   const resumed =
     params.inputProvenance?.sourceTool === COST_REMOTE_RESUME_SOURCE
       ? costRemoteStore()
@@ -75,7 +77,9 @@ export async function withCostRemoteRun<T>(
     if (resumed[0].owner.parentSessionKey) {
       // Run this in the agent entrypoint, not the plugin SDK's registry bundle.
       const registry = await import("./subagent-registry-runtime.js");
-      const child = registry.getCostRemoteOwner(params.runId, params.sessionKey);
+      const child = resumed[0].owner.routingIndependent
+        ? registry.getForegroundRemoteOwner(params.runId, params.sessionKey)
+        : registry.getCostRemoteOwner(params.runId, params.sessionKey);
       if (
         !child ||
         !registry.replaceSubagentRunAfterSteer({
@@ -99,6 +103,7 @@ export async function withCostRemoteRun<T>(
     }
   }
   const owner: CostRemoteOwner = {
+    routingIndependent: !!foreground,
     runId: params.runId,
     sessionKey: params.sessionKey,
     sessionId: params.sessionId,
@@ -124,14 +129,20 @@ export async function withCostRemoteRun<T>(
       groupSpace: params.groupSpace,
     },
   };
-  const { getCostRemoteOwner } = await import("./subagent-registry-runtime.js");
-  let child = getCostRemoteOwner(params.runId, params.sessionKey);
-  if (!child && hasCostRemoteSpawn(params.runId, params.sessionKey)) {
+  const registry = await import("./subagent-registry-runtime.js");
+  const getOwner = foreground?.parentSessionKey
+    ? registry.getForegroundRemoteOwner
+    : registry.getCostRemoteOwner;
+  let child = getOwner(params.runId, params.sessionKey);
+  if (
+    !child &&
+    (foreground?.parentSessionKey || hasCostRemoteSpawn(params.runId, params.sessionKey))
+  ) {
     const registrationDeadline = Math.min(owner.deadlineAt, Date.now() + 10000);
     while (!child && Date.now() < registrationDeadline) {
       params.abortSignal?.throwIfAborted();
       await new Promise((resolve) => setTimeout(resolve, 25));
-      child = getCostRemoteOwner(params.runId, params.sessionKey);
+      child = getOwner(params.runId, params.sessionKey);
     }
     if (!child) {
       throw new Error("Cost child registration was not confirmed; execution was not started");
@@ -139,8 +150,8 @@ export async function withCostRemoteRun<T>(
   }
   if (child) {
     owner.parentSessionKey = child.requesterSessionKey;
-    owner.parentSessionId = child.costTask?.requesterSessionId;
-    owner.deadlineAt = Math.min(owner.deadlineAt, child.costTask!.deadlineAt);
+    owner.parentSessionId = child.costTask?.requesterSessionId ?? foreground?.parentSessionId;
+    owner.deadlineAt = Math.min(owner.deadlineAt, child.costTask?.deadlineAt ?? owner.deadlineAt);
   }
   const originalSignal = params.abortSignal;
   const cancellation = new AbortController();

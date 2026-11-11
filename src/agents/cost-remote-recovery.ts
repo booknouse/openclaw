@@ -8,6 +8,7 @@ import { hasInterSessionUserProvenance } from "../sessions/input-provenance.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import type { CostRemoteWait } from "./cost-remote-wait-store.js";
 import { costRemoteStore, COST_REMOTE_RESUME_SOURCE } from "./cost-remote-wait.js";
+import { foregroundRemoteContext } from "./foreground-remote-session.js";
 import { acquireSessionWriteLock } from "./session-write-lock.js";
 
 function session(key: string): SessionEntry | undefined {
@@ -31,8 +32,10 @@ export function costRemoteOwnerIsCurrent(item: CostRemoteWait): boolean {
   const provider = current?.providerOverride ?? current?.modelProvider;
   return (
     owner.deadlineAt > Date.now() &&
-    (resolveAgentConfig(cfg, agent)?.modelRouting ?? cfg.agents?.defaults?.modelRouting) ===
-      "cost" &&
+    (owner.routingIndependent
+      ? !!foregroundRemoteContext(owner.sessionKey, cfg)
+      : (resolveAgentConfig(cfg, agent)?.modelRouting ?? cfg.agents?.defaults?.modelRouting) ===
+        "cost") &&
     current?.sessionId === owner.sessionId &&
     !current?.abortedLastRun &&
     (model?.includes("/") ? model : `${provider}/${model}`) === owner.model &&
@@ -62,7 +65,10 @@ export async function recoverCostRemoteRun(item: CostRemoteWait): Promise<boolea
   // Resume the same logical run. Server execution bindings and parent subscriptions
   // are keyed by this ID; the durable checkpoint gates entry after a process restart.
   const resumeRunId = item.owner.runId;
-  const { getCostRemoteOwner } = await import("./subagent-registry-runtime.js");
+  const registry = await import("./subagent-registry-runtime.js");
+  const getCostRemoteOwner = item.owner.routingIndependent
+    ? registry.getForegroundRemoteOwner
+    : registry.getCostRemoteOwner;
   const child = item.owner.parentSessionKey
     ? (getCostRemoteOwner(item.owner.runId, item.owner.sessionKey) ??
       getCostRemoteOwner(resumeRunId, item.owner.sessionKey))
@@ -174,7 +180,7 @@ export async function recoverCostRemoteRun(item: CostRemoteWait): Promise<boolea
       timeout: remainingSeconds,
       extraSystemPrompt: item.owner.extraSystemPrompt,
       thinking: item.owner.thinking,
-      message: `Remote operations finished while this cost task was waiting. Read existing results using remote_task_result for ${waits.map((wait) => wait.taskId).join(", ")}, then complete the remaining authorized work and checks. Do not resubmit these commands. This is a continuation of the original task, not new authorization.`,
+      message: `Remote operations finished while this foreground task was waiting. Read existing results using remote_task_result for ${waits.map((wait) => wait.taskId).join(", ")}, then complete the remaining authorized work and checks. Do not resubmit these commands. This is a continuation of the original task, not new authorization.`,
       inputProvenance: {
         kind: "inter_session",
         sourceSessionKey: item.owner.parentSessionKey ?? item.owner.sessionKey,

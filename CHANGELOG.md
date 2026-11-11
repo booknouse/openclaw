@@ -2,6 +2,17 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.19
+
+### Fixes
+
+- Agents/remote tasks: keep foreground remote operations attached to product conversations and their delegated workers even when cost routing is off. Resume the original authorized work after completion without changing model selection, duplicating commands, or reopening cancelled or stale turns.
+- Agents/remote recovery: persist routing-independent ownership and validate the original session, parent, model, and deadline before restoring a wait after restart.
+
+### Upgrade notes
+
+- Requires the matching Server foreground-admission migration and rebuilt remote-tool 0.8.54. Update Server and the plugin before upgrading and restarting the gateway. Explicit background tasks retain independent cancellation; historical detached tasks are not retroactively enrolled.
+
 ## 2026.3.13-cortex.18
 
 ### Fixes
