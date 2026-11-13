@@ -1,0 +1,64 @@
+--- a/dist/providers/openai-responses-shared.js
++++ b/dist/providers/openai-responses-shared.js
+@@ -214,6 +214,8 @@
+ export async function processResponsesStream(openaiStream, output, stream, model, options) {
+     let currentItem = null;
+     let currentBlock = null;
++    const textBlocksById = new Map();
++    const clearedTextItems = new Set();
+     const blocks = output.content;
+     const blockIndex = () => blocks.length - 1;
+     for await (const event of openaiStream) {
+@@ -228,6 +230,7 @@
+             else if (item.type === "message") {
+                 currentItem = item;
+                 currentBlock = { type: "text", text: "" };
++                textBlocksById.set(item.id, currentBlock);
+                 output.content.push(currentBlock);
+                 stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
+             }
+@@ -359,7 +362,9 @@
+                 currentBlock = null;
+             }
+             else if (item.type === "message" && currentBlock?.type === "text") {
+-                currentBlock.text = item.content.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("");
++                const finalText = item.content.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("");
++                if (currentBlock.text && !finalText) clearedTextItems.add(item.id);
++                currentBlock.text = finalText;
+                 currentBlock.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
+                 stream.push({
+                     type: "text_end",
+@@ -385,6 +390,33 @@
+         }
+         else if (event.type === "response.completed") {
+             const response = event.response;
++            // The completed snapshot is authoritative, including explicit empty text
++            // or refusals. Never resurrect deltas that the final response withdrew.
++            if (response?.status === "completed") {
++                for (const item of response.output ?? []) {
++                    if (item.type !== "message" || !Array.isArray(item.content)) continue;
++                    const text = item.content.map((part) => part.type === "output_text" ? part.text : part.type === "refusal" ? part.refusal : "").join("");
++                    let block = textBlocksById.get(item.id);
++                    const isNew = !block;
++                    if (!block) {
++                        block = { type: "text", text: "" };
++                        textBlocksById.set(item.id, block);
++                        blocks.push(block);
++                    }
++                    const changed = block.text !== text;
++                    block.text = text;
++                    block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
++                    clearedTextItems.delete(item.id);
++                    if (isNew || changed) {
++                        const contentIndex = blocks.indexOf(block);
++                        if (isNew) stream.push({ type: "text_start", contentIndex, partial: output });
++                        stream.push({ type: "text_end", contentIndex, content: text, partial: output });
++                    }
++                }
++                if (clearedTextItems.size > 0) {
++                    throw new Error("Responses stream cleared text without a matching completed message snapshot");
++                }
++            }
+             if (response?.usage) {
+                 const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
+                 output.usage = {

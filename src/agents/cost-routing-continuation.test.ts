@@ -119,14 +119,14 @@ describe("task context at the cost execution boundary", () => {
     const first = await resolveCostRoutingExecutionPlan(params);
     await rememberCostRoutingTurn(params, first, result);
     vi.mocked(classifyCostTask).mockImplementation(async (p) => {
-      p.onDecision?.({ route: "secondary", relation: "new" });
+      p.onDecision?.({ route: "secondary", relation: "new", source: "classifier" });
       return "secondary";
     });
     const next = await resolveCostRoutingExecutionPlan({
       ...params,
       prompt: "Extract supplied data",
     });
-    expect(next?.role).toBe("orchestrator");
+    expect(next?.role).toBe("secondary");
     expect(next?.goalEntryId).toBeUndefined();
   });
   it.each(["off", "same-model", "explicit-override"])(

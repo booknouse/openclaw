@@ -1,6 +1,6 @@
 {
   "name": "openclaw",
-  "version": "2026.3.13-cortex.19",
+  "version": "2026.3.13-cortex.21",
   "description": "Multi-channel AI gateway with extensible messaging integrations",
   "keywords": [],
   "homepage": "https://github.com/openclaw/openclaw#readme",
@@ -31,7 +31,8 @@
     "dist/",
     "docs/",
     "extensions/",
-    "skills/"
+    "skills/",
+    "patches/"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -472,5 +473,8 @@
         }
       }
     }
+  },
+  "patchedDependencies": {
+    "@mariozechner/pi-ai@0.58.0": "patches/@mariozechner__pi-ai@0.58.0.patch"
   }
 }

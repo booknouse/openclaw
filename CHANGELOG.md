@@ -2,6 +2,22 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.3.13-cortex.21
+
+### Fixes
+
+- Agents/Responses: constrain ddww model requests to the functions authorized for each turn, including non-cost sessions, workers and continuations. Preserve stricter tool choices and prevent relay-added native image tools from bypassing the registered image plugin.
+- Agents/cost routing: retain primary execution capabilities when classification fails or is unavailable instead of forcing a delegation-only fallback. Respect user delegation constraints; existing permission checks still apply.
+
+- Agents/Responses: reconcile text with the authoritative completed response snapshot, restoring text lost by inconsistent item events while respecting final empty text and refusals; report missing final snapshots after cleared text as protocol errors.
+
+### Upgrade notes
+
+- Pair with codex-image2 0.5.3 for system-level size-selection and delivery guidance. The image plugin's explicit generation request is unaffected. No proxy changes or SDK version upgrade are required for this fix.
+- The Responses tool-scope adapter is limited to the verified ddww provider. Unknown providers and other APIs retain their existing behavior. A rejecting upstream is not retried without the constraint.
+- Classifier outages or missing classifier configuration now keep execution on the primary model, which may increase cost compared with forced worker delegation. Positive secondary classification continues to run on the secondary model.
+- Responses fix requires the tracked pi-ai 0.58.0 patch. Install this checkout with `pnpm install --frozen-lockfile`; copying only dist or using npm alone does not apply pnpm dependency patches. Bun patch metadata is also included, but Bun installation has not been verified.
+
 ## 2026.3.13-cortex.19
 
 ### Fixes

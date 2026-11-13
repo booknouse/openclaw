@@ -83,6 +83,7 @@ import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settin
 import { applyPiAutoCompactionGuard } from "../../pi-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools, resolveToolLoopDetectionConfig } from "../../pi-tools.js";
+import { wrapStreamWithResponsesToolScope } from "../../responses-tool-scope.js";
 import { resolveSandboxContext } from "../../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { isXaiProvider } from "../../schema/clean-for-xai.js";
@@ -2265,6 +2266,8 @@ export async function runEmbeddedAttempt(
           );
         });
       };
+
+      activeSession.agent.streamFn = wrapStreamWithResponsesToolScope(activeSession.agent.streamFn);
 
       const boundedStream = activeSession.agent.streamFn;
       activeSession.agent.streamFn = async (model, context, options) => {

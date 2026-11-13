@@ -217,9 +217,23 @@ describe("classification before primary execution", () => {
     expect(result.tools[1]).toBe(tools[1]);
     expect(result.systemPrompt).toContain("directly in this session");
   });
-  it("classifies ordinary work once before tool construction", async () => {
-    expect((await resolveCostRoutingExecutionPlan(base))?.role).toBe("orchestrator");
+  it("retains primary execution tools when classification is unavailable", async () => {
+    expect((await resolveCostRoutingExecutionPlan(base))?.role).toBe("primary");
     expect(classifyCostTask).toHaveBeenCalledTimes(1);
+  });
+  it("does not force delegation after a classifier failure for a direct image request", async () => {
+    vi.mocked(classifyCostTask).mockRejectedValue(new Error("classifier unavailable"));
+    const plan = await resolveCostRoutingExecutionPlan({
+      ...base,
+      sessionId: "image-no-delegation",
+      prompt: "你直接生图，不要调用子agent",
+    });
+    expect(plan?.role).toBe("primary");
+    const tools = [makeTool("codex_image2_generate"), makeTool("sessions_spawn")];
+    const result = applyCostRoutingToolPolicy(tools, plan?.role);
+    expect(result.tools.map((tool) => tool.name)).toContain("codex_image2_generate");
+    expect(result.systemPrompt).toContain("not prohibited by the user");
+    expect(applyCostRoutingToolPolicy([], plan?.role).tools).toEqual([]);
   });
   it("does not classify bypassed or direct-text requests", async () => {
     expect(await resolveCostRoutingExecutionPlan({ ...base, config: {} })).toBeUndefined();
@@ -256,7 +270,12 @@ describe("classification before primary execution", () => {
   });
   it("does not permanently pin new external tasks to the previous role", async () => {
     const params = { ...base, sessionId: "new-external-task" };
-    vi.mocked(classifyCostTask).mockResolvedValueOnce("primary").mockResolvedValueOnce("secondary");
+    vi.mocked(classifyCostTask)
+      .mockResolvedValueOnce("primary")
+      .mockImplementationOnce(async (params) => {
+        params.onDecision?.({ route: "secondary", source: "classifier", relation: "new" });
+        return "secondary";
+      });
     expect((await resolveCostRoutingExecutionPlan(params))?.role).toBe("primary");
     expect(
       (
@@ -265,7 +284,7 @@ describe("classification before primary execution", () => {
           prompt: "Run the existing export script.",
         })
       )?.role,
-    ).toBe("orchestrator");
+    ).toBe("secondary");
     expect(classifyCostTask).toHaveBeenCalledTimes(2);
   });
   it("preserves dispatch idempotency across internal result delivery, but resets on a new user request", async () => {
@@ -312,7 +331,7 @@ describe("classification before primary execution", () => {
   });
   it("falls back on classifier failure but honors cancellation before executing", async () => {
     vi.mocked(classifyCostTask).mockRejectedValue(new Error("Unavailable"));
-    expect((await resolveCostRoutingExecutionPlan(base))?.role).toBe("orchestrator");
+    expect((await resolveCostRoutingExecutionPlan(base))?.role).toBe("primary");
     const controller = new AbortController();
     vi.mocked(classifyCostTask).mockImplementation(async () => {
       controller.abort();

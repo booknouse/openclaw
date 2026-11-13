@@ -255,7 +255,8 @@ export async function resolveCostRoutingExecutionPlan(
     signal,
   }).catch(() => (previous?.role === "primary" ? ("primary" as const) : ("secondary" as const)));
   signal.throwIfAborted();
-  const role = route === "primary" ? "primary" : classified ? "secondary" : "orchestrator";
+  // A failed optimization must not remove execution tools or force delegation.
+  const role = route === "primary" || !classified ? "primary" : "secondary";
   const execution: CostRoutingTurn = { role, executionState: { spawns: new Map() } };
   executionOwners.set(execution.executionState, key);
   if (!lastExecutions.has(key) && lastExecutions.size >= 256) {
@@ -291,7 +292,7 @@ export const COST_ORCHESTRATOR_PROMPT = [
 ].join("\n");
 
 export const COST_PRIMARY_PROMPT =
-  "Cost routing selected primary execution. Execute the authorized task directly in this session with your available tools. Do not spawn another primary-model session to execute the same task. Delegate only genuinely independent routine work to the configured secondary model when useful. Preserve all existing permissions and verify actual changes before reporting completion.";
+  "Cost routing selected primary execution. Execute the authorized task directly in this session with your available tools. Do not spawn another primary-model session to execute the same task. Delegate only genuinely independent routine work to the configured secondary model when useful and not prohibited by the user. Preserve all existing permissions and verify actual changes before reporting completion.";
 
 /** Filter an already-authorized tool list; never grant tools denied by normal policy. */
 export function applyCostRoutingToolPolicy(
